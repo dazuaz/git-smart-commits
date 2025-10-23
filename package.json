@@ -1,0 +1,12 @@
+{
+  "name": "git-smart-commits",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "git-smart-commit": "bin/git-smart-commit"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "build": "bun build ./src/cli.ts --compile --outfile ./bin/git-smart-commit"
+  }
+}
