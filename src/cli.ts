@@ -57,7 +57,7 @@ async function main() {
   }
 
   const status = getStatusSummary();
-  const branch = getBranchName();
+  const branch = getBranchName(status);
   const repo = getRepoName();
 
   const prompt = buildPrompt({ repo, branch, status, diff });
@@ -136,13 +136,27 @@ function getStatusSummary(): string {
   return result.stdout.trim();
 }
 
-function getBranchName(): string {
-  const result = exec(["git", "rev-parse", "--abbrev-ref", "HEAD"]);
-  if (result.code !== 0) {
-    console.error("Failed to read branch name:\n" + result.stderr.trim());
-    process.exit(result.code);
+function getBranchName(status?: string): string {
+  const derived = status ? parseBranchFromStatus(status) : undefined;
+  if (derived) {
+    return derived;
   }
-  return result.stdout.trim();
+
+  const commands: string[][] = [
+    ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+    ["git", "branch", "--show-current"],
+  ];
+
+  for (const cmd of commands) {
+    const result = exec(cmd);
+    const name = result.stdout.trim();
+    if (result.code === 0 && name) {
+      return name;
+    }
+  }
+
+  return "detached";
 }
 
 function getRepoName(): string {
@@ -342,6 +356,36 @@ function sanitizeCommitMessage(message: string) {
     : `${type}: ${description}`;
 
   return [normalizedHeader, ...body].join("\n");
+}
+
+function parseBranchFromStatus(status: string | undefined) {
+  if (!status) {
+    return undefined;
+  }
+
+  const firstLine = status.split("\n")[0]?.trim();
+  if (!firstLine?.startsWith("##")) {
+    return undefined;
+  }
+
+  let branchHint = firstLine.slice(2).trim();
+  if (!branchHint) {
+    return undefined;
+  }
+
+  if (branchHint.startsWith("No commits yet on ")) {
+    branchHint = branchHint.replace("No commits yet on ", "").trim();
+  }
+
+  if (branchHint.includes("...")) {
+    branchHint = branchHint.split("...")[0]?.trim() ?? branchHint;
+  }
+
+  if (branchHint === "HEAD (no branch)") {
+    return "detached";
+  }
+
+  return branchHint || undefined;
 }
 
 main().catch((error) => {
