@@ -1,3 +1,6 @@
+import type { AgentConfig, LLMConfig, ConventionalType } from "./types.js";
+import { agenticCommit } from "./agent.js";
+
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
@@ -22,10 +25,93 @@ type ExecResult = {
 };
 
 async function main() {
-  ensureGitRepository();
-
   const args = process.argv.slice(2);
   const flags = new Set(args);
+
+  // Check for agent mode
+  if (flags.has("--agent")) {
+    await runAgentMode(args, flags);
+    return;
+  }
+
+  // Legacy single-commit mode
+  await runSingleCommitMode(flags);
+}
+
+async function runAgentMode(args: string[], flags: Set<string>) {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    console.error("Missing OPENAI_API_KEY environment variable.");
+    process.exit(1);
+  }
+
+  const model =
+    process.env.GIT_SMART_MODEL?.trim() ||
+    process.env.OPENAI_MODEL?.trim() ||
+    "gpt-4o-mini";
+  const temperature = parseFloat(
+    process.env.GIT_SMART_TEMPERATURE ?? process.env.OPENAI_TEMPERATURE ?? "0.2",
+  );
+  const baseUrl =
+    process.env.GIT_SMART_BASE_URL?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim() ||
+    "https://api.openai.com";
+
+  const llmConfig: LLMConfig = {
+    apiKey,
+    model,
+    temperature,
+    baseUrl,
+  };
+
+  // Parse agent flags
+  const auto = flags.has("--auto");
+  const confirm = flags.has("--confirm") && !auto;
+  const planOnly = flags.has("--plan-only");
+  const includeUnstaged = flags.has("--include-unstaged");
+  const noCritique = flags.has("--no-critique");
+  const dryRun = flags.has("--dry-run");
+
+  // Parse --max-groups
+  let maxGroups: number | undefined;
+  const maxGroupsArg = args.find((a) => a.startsWith("--max-groups="));
+  if (maxGroupsArg) {
+    maxGroups = parseInt(maxGroupsArg.split("=")[1] || "0", 10) || undefined;
+  }
+
+  // Parse --only-types
+  let onlyTypes: ConventionalType[] | undefined;
+  const onlyTypesArg = args.find((a) => a.startsWith("--only-types="));
+  if (onlyTypesArg) {
+    const types = onlyTypesArg.split("=")[1]?.split(",").map((t) => t.trim()) || [];
+    onlyTypes = types.filter((t) =>
+      CONVENTIONAL_TYPES.includes(t as ConventionalType)
+    ) as ConventionalType[];
+  }
+
+  const agentConfig: AgentConfig = {
+    auto,
+    confirm,
+    planOnly,
+    includeUnstaged,
+    maxGroups,
+    onlyTypes,
+    noCritique,
+    dryRun,
+    messageOnly: false,
+  };
+
+  try {
+    await agenticCommit(agentConfig, llmConfig);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+async function runSingleCommitMode(flags: Set<string>) {
+  ensureGitRepository();
+
   const dryRun = flags.has("--dry-run");
   const messageOnly = flags.has("--message-only");
 
