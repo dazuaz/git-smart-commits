@@ -28,10 +28,12 @@ ${status}
 
 Rules:
 - Types: ${typeList}
-- Aim for single-purpose commits.
+- Aim for single-purpose commits when possible.
 - May create 1..N groups. Merge tiny trivial hunks into nearest logical group.
 - Keep the first line under 60 chars, imperative, lower case, no trailing punctuation.
 - Include scope only if clarifying.
+- For groups with multiple significant change types, include "additionalTypes" (max 2).
+  Only use additionalTypes when changes genuinely span multiple categories (e.g., feat + fix, refactor + perf).
 - Provide a rationale per group.
 - Return JSON only, matching this schema:
 
@@ -40,6 +42,7 @@ Rules:
     {
       "id": "g1",
       "type": "feat|fix|...",
+      "additionalTypes": ["fix", "refactor"],
       "scope": "optional-scope",
       "title": "short summary",
       "body": "optional body, wrap ~72 cols",
@@ -117,9 +120,18 @@ ${hunkSummary}`;
         ? group.files 
         : [...new Set(mappedHunks.map(h => h.file))];
 
+      // Validate and limit additionalTypes
+      const additionalTypes = group.additionalTypes && Array.isArray(group.additionalTypes)
+        ? group.additionalTypes
+            .map((t: string) => validateType(t))
+            .filter((t: ConventionalType) => t !== group.type) // Remove duplicates of main type
+            .slice(0, 2) // Max 2 additional types
+        : undefined;
+
       mappedGroups.push({
         ...group,
         type: validateType(group.type),
+        additionalTypes: additionalTypes?.length ? additionalTypes : undefined,
         files,
         hunks: mappedHunks,
       });

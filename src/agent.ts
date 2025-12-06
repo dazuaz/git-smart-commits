@@ -192,15 +192,31 @@ export async function agenticCommit(
 
 function formatGroupHeader(group: GroupPlan): string {
   const scope = group.scope ? `(${group.scope})` : "";
-  return `${group.type}${scope}: ${group.title}`;
+  const additionalTypesStr = group.additionalTypes?.length
+    ? ` [+${group.additionalTypes.join(", +")}]`
+    : "";
+  return `${group.type}${scope}: ${group.title}${additionalTypesStr}`;
 }
 
 export function formatConventionalCommit(group: GroupPlan): string {
   const scope = group.scope ? `(${group.scope})` : "";
   const header = `${group.type}${scope}: ${group.title}`;
 
+  // Build body with additional types note if present
+  const bodyParts: string[] = [];
+
   if (group.body) {
-    return `${header}\n\n${group.body}`;
+    bodyParts.push(group.body);
+  }
+
+  // Add note about additional change types
+  if (group.additionalTypes?.length) {
+    const typesNote = `Also includes: ${group.additionalTypes.join(", ")}`;
+    bodyParts.push(typesNote);
+  }
+
+  if (bodyParts.length > 0) {
+    return `${header}\n\n${bodyParts.join("\n\n")}`;
   }
 
   return header;
@@ -241,6 +257,9 @@ function printPlan(plan: GroupPlan[]): void {
   for (let i = 0; i < plan.length; i++) {
     const group = plan[i];
     console.log(`${i + 1}. ${formatGroupHeader(group)}`);
+    if (group.additionalTypes?.length) {
+      console.log(`   Also: ${group.additionalTypes.join(", ")}`);
+    }
     if (group.body) {
       console.log(`   ${group.body.split("\n").join("\n   ")}`);
     }

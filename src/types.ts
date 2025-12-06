@@ -26,6 +26,7 @@ export type Hunk = {
 export type GroupPlan = {
   id: string;
   type: ConventionalType;
+  additionalTypes?: ConventionalType[]; // For commits with multiple change types
   scope?: string;
   title: string; // <60 chars
   body?: string; // wrapped at 72 cols
