@@ -390,6 +390,26 @@ function exec(cmd: string[]): ExecResult {
   };
 }
 
+function normalizeDescription(input: string) {
+  const collapsedWhitespace = input.replace(/\s+/g, " ").trim();
+  if (!collapsedWhitespace) {
+    return "";
+  }
+
+  const withoutTrailingPunctuation = collapsedWhitespace.replace(
+    /[.!?,;:]+$/,
+    "",
+  );
+  if (!withoutTrailingPunctuation) {
+    return "";
+  }
+
+  return (
+    withoutTrailingPunctuation[0].toLowerCase() +
+    withoutTrailingPunctuation.slice(1)
+  );
+}
+
 function sanitizeCommitMessage(message: string) {
   const lines = message
     .split(/\r?\n/)
@@ -409,32 +429,45 @@ function sanitizeCommitMessage(message: string) {
     throw new Error("Commit message is missing a summary line.");
   }
 
+  let type = "chore";
+  let scope = "";
+  let description = "";
+
   const headerMatch = header.match(/^([a-zA-Z]+)(\([^)]+\))?:\s*(.+)$/);
-  if (!headerMatch) {
-    throw new Error(
-      "Commit message must start with <type>(optional scope): <description>.",
+  if (headerMatch) {
+    [, type, scope = "", description] = headerMatch;
+    type = type.toLowerCase();
+
+    if (!CONVENTIONAL_TYPES.includes(type)) {
+      type = "chore";
+    }
+
+    if (scope) {
+      const scopeName = scope.slice(1, -1).trim();
+      scope = scopeName ? `(${scopeName.toLowerCase()})` : "";
+    }
+
+    description = normalizeDescription(description);
+    if (!description) {
+      throw new Error("Commit summary description cannot be empty.");
+    }
+  } else {
+    const fallbackDescription = normalizeDescription(
+      header.replace(/^[-*#\s]+/, ""),
     );
-  }
 
-  let [, type, scope = "", description] = headerMatch;
-  type = type.toLowerCase();
+    if (!fallbackDescription) {
+      throw new Error(
+        "Commit message must start with <type>(optional scope): <description>.",
+      );
+    }
 
-  if (!CONVENTIONAL_TYPES.includes(type)) {
-    type = "chore";
-  }
-
-  if (scope) {
-    const scopeName = scope.slice(1, -1).trim();
-    scope = scopeName ? `(${scopeName.toLowerCase()})` : "";
-  }
-
-  description = description.trim();
-  description = description.replace(/[.!?,;:]+$/, "");
-  if (description.length > 0) {
-    description = description[0].toLowerCase() + description.slice(1);
-  }
-  if (!description) {
-    throw new Error("Commit summary description cannot be empty.");
+    description = fallbackDescription;
+    if (message.trim().length) {
+      console.warn(
+        "Commit message missing Conventional Commit header. Defaulting to chore.",
+      );
+    }
   }
 
   const normalizedHeader = scope
