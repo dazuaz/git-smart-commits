@@ -23,9 +23,9 @@ import {
 import { requestGroupPlan, critiqueAndRefinePlan, checkLeakageLLM, critiqueCommitMessage } from "./llm.js";
 import { summarizeHunks } from "./grouping.js";
 
-export async function agenticCommit(
+export async function smartCommit(
   config: AgentConfig,
-  llmConfig: LLMConfig
+  llmConfig: LLMConfig,
 ): Promise<void> {
   ensureGitRepository();
 
@@ -34,98 +34,119 @@ export async function agenticCommit(
   const repo = getRepoName();
   const branch = getBranchName(status);
 
-  // If including unstaged, we need to ensure we can stage files selectively
-  // For file-level grouping, we'll work with what's already staged + optionally unstaged
-  // Collect hunks (staged + optionally unstaged)
-  let hunks = collectHunks(config.includeUnstaged);
+  const initialStagedDiff = getStagedDiff();
+  const initialUnstagedDiff = getUnstagedDiff();
+  const initialUntracked = listUntrackedFiles();
 
-  if (hunks.length === 0) {
-    console.log("No changes to process.");
+  if (
+    !initialStagedDiff.trim() &&
+    !initialUnstagedDiff.trim() &&
+    initialUntracked.length === 0
+  ) {
+    console.log("No changes detected. Nothing to commit.");
     return;
   }
 
-  // If including unstaged, we need to stage them first for file-level grouping
-  if (config.includeUnstaged) {
-    // For file-level grouping, we'll stage files as needed
-    // For now, collect all hunks but don't auto-stage everything
-  }
+  // If both staged and unstaged exist, choose whether to operate on staged-only
+  // or on all working-tree changes. We prefer staged-only by default to avoid
+  // surprising commits.
+  const hasStaged = initialStagedDiff.trim().length > 0;
+  const hasUnstaged = initialUnstagedDiff.trim().length > 0 || initialUntracked.length > 0;
+  const includeAll =
+    hasStaged && hasUnstaged
+      ? await promptYesNo(
+          "Include unstaged/untracked changes too? (y/N): ",
+          false,
+        )
+      : !hasStaged;
 
-  // 2) Think / Plan
-  console.log(`Analyzing ${hunks.length} change(s) across ${new Set(hunks.map(h => h.file)).size} file(s)...`);
+  const stagedSnapshot = getStagedPatch();
+  let committedAny = false;
 
   let plan: GroupPlan[];
   try {
-    plan = await requestGroupPlan(llmConfig, repo, branch, status, hunks);
-  } catch (error) {
-    console.error(`Failed to plan groups: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
-  }
+    // Normalize the index so we can stage precisely per group without depending
+    // on whatever the user had staged previously.
+    //
+    // - Staged-only: we plan from the staged diff we already captured.
+    // - All changes: we clear the index and plan from the working tree diff.
+    const diffForPlanning = includeAll
+      ? prepareAllChangesDiff()
+      : initialStagedDiff;
 
-  if (plan.length === 0) {
-    console.log("No logical groups identified.");
-    return;
-  }
+    const hunks = collectHunksFromDiff(diffForPlanning);
+    if (hunks.length === 0) {
+      console.log("No diff hunks detected. Nothing to commit.");
+      return;
+    }
 
-  // Apply filters
-  if (config.onlyTypes && config.onlyTypes.length > 0) {
-    plan = plan.filter((g) => config.onlyTypes!.includes(g.type));
-  }
+    const plan = await requestGroupPlan(llmConfig, repo, branch, status, hunks);
+    if (plan.length === 0) {
+      console.log("No logical commit groups identified.");
+      return;
+    }
 
-  if (config.maxGroups && plan.length > config.maxGroups) {
-    console.warn(
-      `Limiting groups from ${plan.length} to ${config.maxGroups}`
+    validatePlanForSharedFiles(plan);
+
+    printPlan(plan);
+    if (config.planOnly) {
+      return;
+    }
+
+    const proceed = await promptYesNo(
+      `Proceed to ${config.dryRun ? "simulate" : "create"} ${plan.length} commit(s)? (y/N): `,
+      false,
     );
     plan = plan.slice(0, config.maxGroups);
   }
 
-  // Optional critique of the plan
-  if (!config.noCritique) {
-    plan = await critiqueAndRefinePlan(llmConfig, plan);
-  }
+    const fileGroupCounts = countFilesAcrossGroups(plan);
+    const sharedFiles = new Set(
+      [...fileGroupCounts.entries()]
+        .filter(([, count]) => count > 1)
+        .map(([file]) => file),
+    );
 
-  // 3) Report plan
-  if (config.planOnly) {
-    printPlan(plan);
-    return;
-  }
+    const committed: GroupPlan[] = [];
+    const skipped: GroupPlan[] = [];
 
-  // 4) Act per group
-  const committed: GroupPlan[] = [];
-  const skipped: GroupPlan[] = [];
+    for (let i = 0; i < plan.length; i++) {
+      const group = plan[i];
+      console.log(`\n[${i + 1}/${plan.length}] ${formatGroupHeader(group)}`);
 
-  for (let i = 0; i < plan.length; i++) {
-    const group = plan[i];
-    console.log(`\n[${i + 1}/${plan.length}] ${formatGroupHeader(group)}`);
-
-    const filesToStage = [...new Set(group.files || group.hunks.map((h) => h.file))];
-    
-    if (filesToStage.length === 0) {
-      console.warn("  Skipping: no files to stage");
-      skipped.push(group);
-      continue;
-    }
-
-    // Stage changes for this group:
-    // - Default (legacy): stage entire files
-    // - Optional: stage by hunk patch (more precise splitting within a file)
-    if (config.useHunkStaging) {
-      // Ensure a clean staging area before applying patch
-      clearStagingArea();
-      const patch = buildPatchForGroup(group.hunks);
-      const ok = applyPatchToIndex(patch);
-      if (!ok) {
-        // Fallback to file-level staging if patch apply fails (e.g., new files/renames)
-        clearStagingArea();
-        if (!stageFiles(filesToStage)) {
-          console.error("  Failed to stage files (fallback)");
-          skipped.push(group);
-          continue;
-        }
+      const message = formatConventionalCommit(group);
+      console.log(`\nProposed commit message:\n${message}\n`);
+      console.log(`Files: ${group.files.join(", ")}`);
+      if (group.rationale) {
+        console.log(`Rationale: ${group.rationale}`);
       }
-    } else {
-      // For MVP, use file-level staging (stage entire files per group)
-      if (!stageFiles(filesToStage)) {
-        console.error("  Failed to stage files");
+
+      const accepted = await promptYesNo("Commit? (y/N): ", false);
+      if (!accepted) {
+        console.log("  Skipped by user");
+        skipped.push(group);
+        continue;
+      }
+
+      // Stage the changes for this group.
+      if (!clearStagingArea()) {
+        console.error("  Failed to clear staging area.");
+        skipped.push(group);
+        continue;
+      }
+
+      const stagedOk = stageGroup(group, sharedFiles);
+      if (!stagedOk) {
+        console.error("  Failed to stage this group.");
+        clearStagingArea();
+        skipped.push(group);
+        continue;
+      }
+
+      const stagedDiff = getStagedDiff();
+      if (!stagedDiff.trim()) {
+        console.warn("  Skipping: no changes staged");
+        clearStagingArea();
         skipped.push(group);
         continue;
       }
