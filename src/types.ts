@@ -21,6 +21,9 @@ export type Hunk = {
   linesRemoved: number;
   hunkIndex: number; // Index within the file's hunks
   startLine: number; // Starting line number in original file
+  isNewFile?: boolean;
+  isDeletedFile?: boolean;
+  isRename?: boolean;
 };
 
 export type GroupPlan = {
