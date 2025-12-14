@@ -14,6 +14,7 @@ Usage:
 Options:
   --plan-only   Print the proposed commit plan, do nothing
   --dry-run     Show what would be committed, do not commit
+  --debug       Print progress/timing to stderr
   --help        Show this help
 
 Environment:
@@ -21,6 +22,7 @@ Environment:
   GIT_SMART_MODEL / OPENAI_MODEL  Model name (default: gpt-4o-mini)
   GIT_SMART_TEMPERATURE / OPENAI_TEMPERATURE (default: 0.2)
   GIT_SMART_BASE_URL / OPENAI_BASE_URL (default: https://api.openai.com)
+  GIT_SMART_DEBUG=1              Enable debug logging
 `);
 }
 
@@ -31,6 +33,10 @@ async function main() {
   if (flags.has("--help") || flags.has("-h")) {
     printHelp();
     return;
+  }
+
+  if (flags.has("--debug")) {
+    process.env.GIT_SMART_DEBUG = "1";
   }
 
   const apiKey = process.env.OPENAI_API_KEY?.trim();
