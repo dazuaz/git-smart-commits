@@ -23,45 +23,10 @@ const CONVENTIONAL_TYPES = [
 Usage:
   git-smart-commit [--plan-only] [--dry-run]
 
-async function main() {
-  const args: string[] = process.argv.slice(2);
-  const flags: Set<string> = new Set(args);
-
-  // Check for agent mode
-  if (flags.has("--agent")) {
-    await runAgentMode(args, flags);
-    return;
-  }
-
-  // Legacy single-commit mode
-  await runSingleCommitMode(flags);
-}
-
-async function runAgentMode(args: string[], flags: Set<string>) {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) {
-    console.error("Missing OPENAI_API_KEY environment variable.");
-    process.exit(1);
-  }
-
-  const model =
-    process.env.GIT_SMART_MODEL?.trim() ||
-    process.env.OPENAI_MODEL?.trim() ||
-    "gpt-4o-mini";
-  const temperature = parseFloat(
-    process.env.GIT_SMART_TEMPERATURE ?? process.env.OPENAI_TEMPERATURE ?? "0.2",
-  );
-  const baseUrl =
-    process.env.GIT_SMART_BASE_URL?.trim() ||
-    process.env.OPENAI_BASE_URL?.trim() ||
-    "https://api.openai.com";
-
-  const llmConfig: LLMConfig = {
-    apiKey,
-    model,
-    temperature,
-    baseUrl,
-  };
+Options:
+  --plan-only   Print the proposed commit plan, do nothing
+  --dry-run     Show what would be committed, do not commit
+  --help        Show this help
 
   // Parse agent flags
   const auto = flags.has("--auto");
@@ -110,15 +75,13 @@ async function runAgentMode(args: string[], flags: Set<string>) {
   }
 }
 
-async function runSingleCommitMode(flags: Set<string>) {
-  ensureGitRepository();
+async function main() {
+  const args = process.argv.slice(2);
+  const flags = new Set(args);
 
-  const dryRun = flags.has("--dry-run");
-  const messageOnly = flags.has("--message-only");
-
-  if (dryRun && messageOnly) {
-    console.error("Use either --dry-run or --message-only, not both.");
-    process.exit(1);
+  if (flags.has("--help") || flags.has("-h")) {
+    printHelp();
+    return;
   }
 
   const apiKey = process.env.OPENAI_API_KEY?.trim();
