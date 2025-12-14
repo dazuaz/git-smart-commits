@@ -151,105 +151,117 @@ export function intentToAddFiles(files: string[]): boolean {
 
 export function collectHunksFromDiff(diff: string): Hunk[] {
   const hunks: Hunk[] = [];
-  const stagedDiff = getStagedDiff();
-  const unstagedDiff = includeUnstaged ? getUnstagedDiff() : "";
+  if (!diff.trim()) {
+    return hunks;
+  }
 
-  const parseDiff = (diff: string) => {
-    if (!diff.trim()) return;
+  const lines = diff.split("\n");
+  let currentFile = "";
+  let currentHunk: string[] = [];
+  let hunkIndex = 0;
+  let startLine = 0;
+  let linesAdded = 0;
+  let linesRemoved = 0;
 
-    const lines = diff.split("\n");
-    let currentFile = "";
-    let currentHunk: string[] = [];
-    let hunkIndex = 0;
-    let startLine = 0;
-    let linesAdded = 0;
-    let linesRemoved = 0;
+  let isNewFile = false;
+  let isDeletedFile = false;
+  let isRename = false;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+  const pushCurrentHunk = () => {
+    if (currentHunk.length === 0 || !currentFile) {
+      return;
+    }
+    hunks.push({
+      file: currentFile,
+      patch: currentHunk.join("\n"),
+      linesAdded,
+      linesRemoved,
+      hunkIndex,
+      startLine,
+      isNewFile: isNewFile || undefined,
+      isDeletedFile: isDeletedFile || undefined,
+      isRename: isRename || undefined,
+    });
+    currentHunk = [];
+  };
 
-      // File header: diff --git a/path b/path
-      if (line.startsWith("diff --git")) {
-        // Save previous hunk if exists
-        if (currentHunk.length > 0 && currentFile) {
-          hunks.push({
-            file: currentFile,
-            patch: currentHunk.join("\n"),
-            linesAdded,
-            linesRemoved,
-            hunkIndex,
-            startLine,
-          });
-          currentHunk = [];
-        }
-        const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-        if (match) {
-          currentFile = match[2];
-          hunkIndex = 0;
-        }
-        continue;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // File header: diff --git a/path b/path
+    if (line.startsWith("diff --git")) {
+      pushCurrentHunk();
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      if (match) {
+        currentFile = match[2];
+        hunkIndex = 0;
+        isNewFile = false;
+        isDeletedFile = false;
+        isRename = false;
+      } else {
+        currentFile = "";
       }
-
-      // Skip index and file mode lines
-      if (line.startsWith("index ") || line.startsWith("new file mode") || 
-          line.startsWith("deleted file mode") || line.startsWith("---") || 
-          line.startsWith("+++")) {
-        continue;
-      }
-
-      // Hunk header: @@ -start,count +start,count @@
-      if (line.startsWith("@@")) {
-        // Save previous hunk if exists
-        if (currentHunk.length > 0 && currentFile) {
-          hunks.push({
-            file: currentFile,
-            patch: currentHunk.join("\n"),
-            linesAdded,
-            linesRemoved,
-            hunkIndex,
-            startLine,
-          });
-        }
-
-        const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-        if (match) {
-          startLine = parseInt(match[3] || "0", 10);
-          linesRemoved = parseInt(match[2] || "1", 10);
-          linesAdded = parseInt(match[4] || "1", 10);
-          currentHunk = [line];
-          hunkIndex++;
-        }
-        continue;
-      }
-
-      // Hunk content - count actual additions/removals
-      if (currentHunk.length > 0) {
-        currentHunk.push(line);
-        if (line.startsWith("+") && !line.startsWith("++")) {
-          // Count added lines
-        } else if (line.startsWith("-") && !line.startsWith("--")) {
-          // Count removed lines
-        }
-      }
+      continue;
     }
 
-    // Push final hunk
-    if (currentHunk.length > 0 && currentFile) {
-      hunks.push({
-        file: currentFile,
-        patch: currentHunk.join("\n"),
-        linesAdded,
-        linesRemoved,
-        hunkIndex,
-        startLine,
-      });
+    if (!currentFile) {
+      continue;
+    }
+
+    if (line.startsWith("new file mode")) {
+      isNewFile = true;
+      continue;
+    }
+    if (line.startsWith("deleted file mode")) {
+      isDeletedFile = true;
+      continue;
+    }
+    if (line.startsWith("rename from") || line.startsWith("rename to")) {
+      isRename = true;
+      continue;
+    }
+
+    // Hunk header: @@ -start,count +start,count @@
+    if (line.startsWith("@@")) {
+      pushCurrentHunk();
+
+      const match = line.match(
+        /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
+      );
+      if (!match) {
+        continue;
+      }
+
+      startLine = parseInt(match[3] || "0", 10);
+      linesAdded = 0;
+      linesRemoved = 0;
+      hunkIndex++;
+      currentHunk = [line];
+      continue;
+    }
+
+    // Skip non-hunk metadata and file markers.
+    if (
+      currentHunk.length === 0 &&
+      (line.startsWith("index ") ||
+        line.startsWith("---") ||
+        line.startsWith("+++"))
+    ) {
+      continue;
     }
   };
 
-  parseDiff(stagedDiff);
-  if (includeUnstaged) {
-    parseDiff(unstagedDiff);
+    if (currentHunk.length > 0) {
+      currentHunk.push(line);
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        linesAdded++;
+      } else if (line.startsWith("-") && !line.startsWith("---")) {
+        linesRemoved++;
+      }
+    }
   }
+  pushCurrentHunk();
+
 
   return hunks;
 }
