@@ -259,8 +259,8 @@ export function collectHunksFromDiff(diff: string): Hunk[] {
       }
     }
   }
-  pushCurrentHunk();
 
+  pushCurrentHunk();
 
   return hunks;
 }
