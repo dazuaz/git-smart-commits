@@ -3,8 +3,8 @@
 import type { AgentConfig, LLMConfig, ConventionalType } from "./types.js";
 import { agenticCommit } from "./agent.js";
 
-const decoder = new TextDecoder();
-const encoder = new TextEncoder();
+function printHelp(): void {
+  console.log(`git-smart-commit
 
 const CONVENTIONAL_TYPES = [
   "build",
@@ -20,11 +20,8 @@ const CONVENTIONAL_TYPES = [
   "test",
 ];
 
-type ExecResult = {
-  stdout: string;
-  stderr: string;
-  code: number;
-};
+Usage:
+  git-smart-commit [--plan-only] [--dry-run]
 
 async function main() {
   const args: string[] = process.argv.slice(2);
