@@ -50,47 +50,191 @@ export function applyHeuristics(hunks: Hunk[]): Map<string, Hunk[]> {
   return groups;
 }
 
+export type PlanningChunk = {
+  id: string;
+  summary: string;
+  files: string[];
+  hunkRefs: Array<{ file: string; hunkIndex: number }>;
+};
+
+type BuildPlanningChunksOptions = {
+  maxChunkChars: number;
+  maxTotalChars?: number;
+  perHunkMaxChangedLines?: number;
+  perHunkMaxHeaderLines?: number;
+  perLineMaxChars?: number;
+};
+
+function clampLine(line: string, maxChars: number): string {
+  if (line.length <= maxChars) return line;
+  return line.slice(0, Math.max(0, maxChars - 1)) + "…";
+}
+
+function pickChangedLines(
+  changed: string[],
+  maxLines: number
+): { picked: string[]; omittedCount: number } {
+  if (maxLines <= 0) return { picked: [], omittedCount: changed.length };
+  if (changed.length <= maxLines) return { picked: changed, omittedCount: 0 };
+
+  const headCount = Math.ceil(maxLines / 2);
+  const tailCount = Math.floor(maxLines / 2);
+
+  const picked = [...changed.slice(0, headCount), ...changed.slice(-tailCount)];
+
+  // Deduplicate while preserving order (head/tail overlap for small arrays)
+  const seen = new Set<string>();
+  const uniq: string[] = [];
+  for (const l of picked) {
+    if (!seen.has(l)) {
+      seen.add(l);
+      uniq.push(l);
+    }
+  }
+
+  return { picked: uniq, omittedCount: Math.max(0, changed.length - uniq.length) };
+}
+
+function extractSignalLines(lines: string[]): string[] {
+  const signal: string[] = [];
+  const re =
+    /(export\s+|import\s+|from\s+["']|class\s+|interface\s+|type\s+|function\s+|async\s+function|const\s+\w+\s*=\s*\(|def\s+|enum\s+|schema|route|endpoint|controller|handler|middleware|migration|sql|graphql)/i;
+  for (const l of lines) {
+    const trimmed = l.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("+") || trimmed.startsWith("-")) {
+      if (re.test(trimmed)) {
+        signal.push(trimmed);
+      }
+    }
+  }
+  return signal;
+}
+
+export function formatHunkForPlanning(
+  hunk: Hunk,
+  opts?: BuildPlanningChunksOptions
+): string {
+  const perLineMaxChars = opts?.perLineMaxChars ?? 220;
+  const perHunkMaxChangedLines = opts?.perHunkMaxChangedLines ?? 28;
+  const perHunkMaxHeaderLines = opts?.perHunkMaxHeaderLines ?? 2;
+
+  const rawLines = hunk.patch.split("\n");
+  const headerLines = rawLines
+    .filter((l) => l.startsWith("@@"))
+    .slice(0, perHunkMaxHeaderLines);
+
+  const changedLinesAll = rawLines.filter((l) => {
+    if (l.startsWith("+++ ") || l.startsWith("--- ")) return false;
+    return (l.startsWith("+") && !l.startsWith("++")) || (l.startsWith("-") && !l.startsWith("--"));
+  });
+
+  const signal = extractSignalLines(changedLinesAll).slice(0, 10);
+  const { picked, omittedCount } = pickChangedLines(changedLinesAll, perHunkMaxChangedLines);
+
+  const lines: string[] = [];
+  lines.push(`  Hunk ${hunk.hunkIndex} (@${hunk.startLine}, ${hunk.linesAdded}+ ${hunk.linesRemoved}-):`);
+  for (const hl of headerLines) lines.push(`    ${clampLine(hl, perLineMaxChars)}`);
+  if (signal.length) {
+    lines.push(`    Signals:`);
+    for (const s of signal) lines.push(`      ${clampLine(s, perLineMaxChars)}`);
+  }
+  if (picked.length) {
+    lines.push(`    Changed:`);
+    for (const c of picked) lines.push(`      ${clampLine(c, perLineMaxChars)}`);
+  }
+  if (omittedCount > 0) {
+    lines.push(`    (omitted ${omittedCount} changed lines)`);
+  }
+  return lines.join("\n");
+}
+
+export function buildPlanningChunks(
+  hunks: Hunk[],
+  opts: BuildPlanningChunksOptions
+): PlanningChunk[] {
+  const maxChunkChars = Math.max(2000, opts.maxChunkChars);
+  const maxTotalChars = opts.maxTotalChars;
+
+  // Group hunks by file to keep locality, then sort files for stability.
+  const byFile = new Map<string, Hunk[]>();
+  for (const h of hunks) {
+    const existing = byFile.get(h.file) ?? [];
+    existing.push(h);
+    byFile.set(h.file, existing);
+  }
+
+  const files = [...byFile.keys()].sort();
+
+  const chunks: PlanningChunk[] = [];
+  let current: PlanningChunk = { id: `c${chunks.length + 1}`, summary: "", files: [], hunkRefs: [] };
+  let totalChars = 0;
+
+  const pushCurrent = () => {
+    if (!current.summary.trim()) return;
+    chunks.push(current);
+    current = { id: `c${chunks.length + 1}`, summary: "", files: [], hunkRefs: [] };
+  };
+
+  const append = (text: string) => {
+    current.summary += current.summary ? `\n${text}` : text;
+  };
+
+  for (const file of files) {
+    const fileHunks = (byFile.get(file) ?? []).slice().sort((a, b) => a.hunkIndex - b.hunkIndex);
+
+    const fileBlockLines: string[] = [];
+    fileBlockLines.push(`File: ${file} (${fileHunks.length} hunk(s))`);
+    for (const hunk of fileHunks) {
+      fileBlockLines.push(formatHunkForPlanning(hunk, opts));
+    }
+    const fileBlock = fileBlockLines.join("\n");
+
+    const projectedLen = (current.summary ? current.summary.length + 1 : 0) + fileBlock.length;
+    if (current.summary && projectedLen > maxChunkChars) {
+      pushCurrent();
+    }
+
+    // If a single file block is gigantic, hard-truncate it with a marker.
+    let blockToAdd = fileBlock;
+    if (blockToAdd.length > maxChunkChars) {
+      blockToAdd =
+        fileBlock.slice(0, Math.max(0, maxChunkChars - 120)) +
+        `\n(truncated: file block exceeded chunk budget)\n`;
+    }
+
+    append(blockToAdd);
+    current.files.push(file);
+    for (const h of fileHunks) current.hunkRefs.push({ file: h.file, hunkIndex: h.hunkIndex });
+
+    totalChars += blockToAdd.length;
+    if (maxTotalChars && totalChars > maxTotalChars) {
+      append(`\n(truncated: overall planning context exceeded maxTotalChars=${maxTotalChars})`);
+      break;
+    }
+  }
+
+  pushCurrent();
+  return chunks;
+}
+
 export function summarizeHunks(hunks: Hunk[], maxLength: number = 8000): string {
   if (hunks.length === 0) {
     return "";
   }
 
-  // Group by file
-  const byFile = new Map<string, Hunk[]>();
-  for (const hunk of hunks) {
-    const existing = byFile.get(hunk.file) || [];
-    existing.push(hunk);
-    byFile.set(hunk.file, existing);
-  }
+  // New approach: reuse the planning formatter and chunk builder for a stable,
+  // information-dense summary (still bounded by maxLength).
+  const chunks = buildPlanningChunks(hunks, {
+    maxChunkChars: maxLength,
+    maxTotalChars: maxLength,
+    perHunkMaxChangedLines: 24,
+    perHunkMaxHeaderLines: 2,
+    perLineMaxChars: 200,
+  });
 
-  const summaries: string[] = [];
-  let totalLength = 0;
-
-  for (const [file, fileHunks] of byFile.entries()) {
-    const fileSummary: string[] = [];
-    fileSummary.push(`\nFile: ${file}`);
-
-    for (const hunk of fileHunks) {
-      const hunkLines = hunk.patch.split("\n").slice(0, 20); // First 20 lines of hunk
-      const hunkPreview = hunkLines.join("\n");
-      fileSummary.push(`  Hunk ${hunk.hunkIndex} (${hunk.linesAdded}+ ${hunk.linesRemoved}-):`);
-      fileSummary.push(hunkPreview);
-      if (hunk.patch.split("\n").length > 20) {
-        fileSummary.push(`  ... (${hunk.patch.split("\n").length - 20} more lines)`);
-      }
-    }
-
-    const fileSummaryStr = fileSummary.join("\n");
-    if (totalLength + fileSummaryStr.length > maxLength) {
-      summaries.push(`\n... (${byFile.size - summaries.length} more files)`);
-      break;
-    }
-
-    summaries.push(fileSummaryStr);
-    totalLength += fileSummaryStr.length;
-  }
-
-  return summaries.join("\n");
+  if (chunks.length === 0) return "";
+  return chunks[0].summary;
 }
 
 export function mergeTinyGroups(

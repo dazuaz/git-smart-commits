@@ -97,8 +97,6 @@ export async function agenticCommit(
     const group = plan[i];
     console.log(`\n[${i + 1}/${plan.length}] ${formatGroupHeader(group)}`);
 
-    // For MVP, use file-level staging (stage entire files per group)
-    // This is simpler and covers ~70% of use cases
     const filesToStage = [...new Set(group.files || group.hunks.map((h) => h.file))];
     
     if (filesToStage.length === 0) {
@@ -107,18 +105,37 @@ export async function agenticCommit(
       continue;
     }
 
-    // Stage files for this group
-    if (!stageFiles(filesToStage)) {
-      console.error("  Failed to stage files");
-      skipped.push(group);
-      continue;
+    // Stage changes for this group:
+    // - Default (legacy): stage entire files
+    // - Optional: stage by hunk patch (more precise splitting within a file)
+    if (config.useHunkStaging) {
+      // Ensure a clean staging area before applying patch
+      clearStagingArea();
+      const patch = buildPatchForGroup(group.hunks);
+      const ok = applyPatchToIndex(patch);
+      if (!ok) {
+        // Fallback to file-level staging if patch apply fails (e.g., new files/renames)
+        clearStagingArea();
+        if (!stageFiles(filesToStage)) {
+          console.error("  Failed to stage files (fallback)");
+          skipped.push(group);
+          continue;
+        }
+      }
+    } else {
+      // For MVP, use file-level staging (stage entire files per group)
+      if (!stageFiles(filesToStage)) {
+        console.error("  Failed to stage files");
+        skipped.push(group);
+        continue;
+      }
     }
 
     // Verify we have staged changes
     const stagedCheck = getStagedDiff();
     if (!stagedCheck.trim()) {
       console.warn("  Skipping: no changes staged");
-      unstageFiles(filesToStage);
+      clearStagingArea();
       skipped.push(group);
       continue;
     }
@@ -132,7 +149,7 @@ export async function agenticCommit(
       if (!accepted) {
         console.log("  Skipped by user");
         // Unstage this group
-        unstageFiles(filesToStage);
+        clearStagingArea();
         skipped.push(group);
         continue;
       }
@@ -164,7 +181,7 @@ export async function agenticCommit(
       console.log("  [DRY RUN] Would commit with message above");
       committed.push(group);
       // Unstage for dry run so next group can stage fresh
-      unstageFiles(filesToStage);
+      clearStagingArea();
     } else {
       if (commitWithMessage(message)) {
         committed.push(group);

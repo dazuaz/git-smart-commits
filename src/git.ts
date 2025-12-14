@@ -225,7 +225,6 @@ export function buildPatchForGroup(hunks: Hunk[]): string {
   for (const [file, fileHunks] of hunksByFile.entries()) {
     // Build file header
     patches.push(`diff --git a/${file} b/${file}`);
-    patches.push(`index 0000000..1111111 100644`);
     patches.push(`--- a/${file}`);
     patches.push(`+++ b/${file}`);
 
@@ -243,17 +242,17 @@ export function applyPatchToIndex(patch: string): boolean {
     return true;
   }
 
-  const result = exec([
-    "git",
-    "apply",
-    "--cached",
-    "--unidiff-zero",
-    "--allow-empty",
-    "-",
-  ]);
+  const proc = Bun.spawnSync({
+    cmd: ["git", "apply", "--cached", "--unidiff-zero", "--allow-empty", "-"],
+    stdin: encoder.encode(patch.endsWith("\n") ? patch : `${patch}\n`),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
-  if (result.code !== 0) {
-    console.error(`Failed to apply patch: ${result.stderr.trim()}`);
+  const code = proc.exitCode ?? 1;
+  if (code !== 0) {
+    const stderr = decoder.decode(proc.stderr ?? new Uint8Array());
+    console.error(`Failed to apply patch: ${stderr.trim()}`);
     return false;
   }
 

@@ -46,6 +46,7 @@ export type AgentConfig = {
   noCritique: boolean; // Skip critique step
   dryRun: boolean; // Don't actually commit
   messageOnly: boolean; // Just print messages
+  useHunkStaging?: boolean; // Stage by hunk patch instead of whole files
 };
 
 export type LLMConfig = {

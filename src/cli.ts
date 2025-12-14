@@ -1,3 +1,5 @@
+/// <reference path="./globals.d.ts" />
+
 import type { AgentConfig, LLMConfig, ConventionalType } from "./types.js";
 import { agenticCommit } from "./agent.js";
 
@@ -25,8 +27,8 @@ type ExecResult = {
 };
 
 async function main() {
-  const args = process.argv.slice(2);
-  const flags = new Set(args);
+  const args: string[] = process.argv.slice(2);
+  const flags: Set<string> = new Set(args);
 
   // Check for agent mode
   if (flags.has("--agent")) {
@@ -71,6 +73,7 @@ async function runAgentMode(args: string[], flags: Set<string>) {
   const includeUnstaged = flags.has("--include-unstaged");
   const noCritique = flags.has("--no-critique");
   const dryRun = flags.has("--dry-run");
+  const useHunkStaging = flags.has("--use-hunks");
 
   // Parse --max-groups
   let maxGroups: number | undefined;
@@ -99,6 +102,7 @@ async function runAgentMode(args: string[], flags: Set<string>) {
     noCritique,
     dryRun,
     messageOnly: false,
+    useHunkStaging,
   };
 
   try {
