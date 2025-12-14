@@ -40,6 +40,7 @@ The CLI will:
 **Flags:**
 - `--plan-only` &mdash; print the proposed plan/messages, do nothing
 - `--dry-run` &mdash; simulate staging/commits without committing
+- `--debug` &mdash; print progress/timing to stderr (useful if it feels stuck)
 
 **Examples:**
 ```bash
