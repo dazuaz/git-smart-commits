@@ -39,17 +39,8 @@ export type GroupPlan = {
 };
 
 export type AgentConfig = {
-  auto: boolean; // No prompts
-  confirm: boolean; // Ask before each commit
-  planOnly: boolean; // Print plan, do nothing
-  includeUnstaged: boolean; // Include unstaged changes
-  maxGroups?: number;
-  minHunkSize?: number;
-  onlyTypes?: ConventionalType[];
-  noCritique: boolean; // Skip critique step
-  dryRun: boolean; // Don't actually commit
-  messageOnly: boolean; // Just print messages
-  useHunkStaging?: boolean; // Stage by hunk patch instead of whole files
+  planOnly: boolean; // Print the proposed plan, do nothing
+  dryRun: boolean; // Show what would be committed without committing
 };
 
 export type LLMConfig = {
@@ -69,4 +60,3 @@ export type LeakageCheck = {
   hasLeak: boolean;
   message?: string;
 };
-

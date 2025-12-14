@@ -249,7 +249,6 @@ export function collectHunksFromDiff(diff: string): Hunk[] {
     ) {
       continue;
     }
-  };
 
     if (currentHunk.length > 0) {
       currentHunk.push(line);
@@ -401,4 +400,3 @@ export function clearStagingArea(): boolean {
   const result = exec(["git", "reset", "HEAD"]);
   return result.code === 0;
 }
-

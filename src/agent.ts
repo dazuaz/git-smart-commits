@@ -1,27 +1,23 @@
-import type {
-  AgentConfig,
-  LLMConfig,
-  GroupPlan,
-  Hunk,
-} from "./types.js";
+import type { AgentConfig, GroupPlan, Hunk, LLMConfig } from "./types.js";
 import {
+  applyPatchToIndex,
+  buildPatchForGroup,
+  clearStagingArea,
+  collectHunksFromDiff,
+  commitWithMessage,
   ensureGitRepository,
-  getStatusSummary,
   getBranchName,
   getRepoName,
-  collectHunks,
-  buildPatchForGroup,
-  applyPatchToIndex,
-  unstagePatch,
-  getDiffSummary,
-  commitWithMessage,
-  stageFiles,
-  unstageFiles,
-  clearStagingArea,
   getStagedDiff,
+  getStagedPatch,
+  getStatusSummary,
+  getUnstagedDiff,
+  intentToAddFiles,
+  listUntrackedFiles,
+  restoreStagedPatch,
+  stageFiles,
 } from "./git.js";
-import { requestGroupPlan, critiqueAndRefinePlan, checkLeakageLLM, critiqueCommitMessage } from "./llm.js";
-import { summarizeHunks } from "./grouping.js";
+import { requestGroupPlan } from "./llm.js";
 
 export async function smartCommit(
   config: AgentConfig,
@@ -29,7 +25,6 @@ export async function smartCommit(
 ): Promise<void> {
   ensureGitRepository();
 
-  // 1) Sense
   const status = getStatusSummary();
   const repo = getRepoName();
   const branch = getBranchName(status);
@@ -63,7 +58,6 @@ export async function smartCommit(
   const stagedSnapshot = getStagedPatch();
   let committedAny = false;
 
-  let plan: GroupPlan[];
   try {
     // Normalize the index so we can stage precisely per group without depending
     // on whatever the user had staged previously.
@@ -97,8 +91,10 @@ export async function smartCommit(
       `Proceed to ${config.dryRun ? "simulate" : "create"} ${plan.length} commit(s)? (y/N): `,
       false,
     );
-    plan = plan.slice(0, config.maxGroups);
-  }
+    if (!proceed) {
+      console.log("Aborted.");
+      return;
+    }
 
     const fileGroupCounts = countFilesAcrossGroups(plan);
     const sharedFiles = new Set(
@@ -150,82 +146,132 @@ export async function smartCommit(
         skipped.push(group);
         continue;
       }
-    }
 
-    // Verify we have staged changes
-    const stagedCheck = getStagedDiff();
-    if (!stagedCheck.trim()) {
-      console.warn("  Skipping: no changes staged");
-      clearStagingArea();
-      skipped.push(group);
-      continue;
-    }
-
-    const message = formatConventionalCommit(group);
-
-    // User confirmation
-    if (config.confirm && !config.auto) {
-      console.log(`\nProposed commit message:\n${message}\n`);
-      const accepted = await userAccepts(group, message);
-      if (!accepted) {
-        console.log("  Skipped by user");
-        // Unstage this group
+      if (config.dryRun) {
+        console.log("  [DRY RUN] Would commit staged changes above");
+        committed.push(group);
         clearStagingArea();
-        skipped.push(group);
         continue;
       }
-    } else if (!config.auto) {
-      console.log(`\nCommit message:\n${message}\n`);
-    }
 
-    // Optional critique
-    if (!config.noCritique && !config.dryRun) {
-      const diffSummary = summarizeHunks(group.hunks, 2000);
-      const critique = await critiqueCommitMessage(llmConfig, message, diffSummary);
-      if (!critique.ok && critique.suggestedMessage) {
-        console.warn(`  Critique suggests: ${critique.suggestedMessage}`);
-        if (config.confirm && !config.auto) {
-          const useSuggested = await userAccepts(group, critique.suggestedMessage);
-          if (useSuggested) {
-            // Re-commit with suggested message
-            if (commitWithMessage(critique.suggestedMessage)) {
-              committed.push(group);
-              continue;
-            }
-          }
-        }
+      const ok = commitWithMessage(message);
+      clearStagingArea();
+
+      if (ok) {
+        committed.push(group);
+        committedAny = true;
+      } else {
+        skipped.push(group);
       }
     }
 
-    // Commit
-    if (config.dryRun) {
-      console.log("  [DRY RUN] Would commit with message above");
-      committed.push(group);
-      // Unstage for dry run so next group can stage fresh
-      clearStagingArea();
+    printSummary(committed, skipped);
+  } finally {
+    if (config.planOnly || config.dryRun || !committedAny) {
+      restoreStagedPatch(stagedSnapshot);
     } else {
-      if (commitWithMessage(message)) {
-        committed.push(group);
+      clearStagingArea();
+    }
+  }
+}
 
-        // 5) Verify commit scope leakage (optional)
-        if (!config.noCritique) {
-          const residual = getDiffSummary();
-          const leakage = await checkLeakageLLM(llmConfig, message, residual);
-          if (leakage.hasLeak) {
-            console.warn(
-              `  Potential scope leakage detected: ${leakage.message || "Consider follow-up commits."}`
-            );
-          }
-        }
-      } else {
-        console.error("  Commit failed");
-        skipped.push(group);
+function prepareAllChangesDiff(): string {
+  // We need a single, collision-free hunk index space per file. The simplest way
+  // is to ensure the index is clean and only plan from the working tree diff.
+  clearStagingArea();
+
+  const untracked = listUntrackedFiles();
+  if (untracked.length > 0) {
+    // Make untracked files show up in `git diff` as new-file patches without
+    // staging their contents yet.
+    intentToAddFiles(untracked);
+  }
+
+  return getUnstagedDiff();
+}
+
+function countFilesAcrossGroups(plan: GroupPlan[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const group of plan) {
+    for (const file of group.files) {
+      counts.set(file, (counts.get(file) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function validatePlanForSharedFiles(plan: GroupPlan[]): void {
+  const counts = countFilesAcrossGroups(plan);
+  const shared = new Set(
+    [...counts.entries()].filter(([, count]) => count > 1).map(([f]) => f),
+  );
+
+  if (shared.size === 0) {
+    return;
+  }
+
+  const problems: string[] = [];
+
+  for (const file of shared) {
+    for (const group of plan) {
+      if (!group.files.includes(file)) {
+        continue;
+      }
+      const hasHunksForFile = group.hunks.some((h) => h.file === file);
+      if (!hasHunksForFile) {
+        problems.push(
+          `Group ${group.id} includes shared file ${file} but has no hunks for it.`,
+        );
       }
     }
   }
 
-  // 6) Report
-  printSummary(committed, skipped);
+  // New/deleted/renamed files cannot be safely split across multiple commits via
+  // patch staging; require them to appear in only one group.
+  for (const group of plan) {
+    const special = new Set(
+      group.hunks
+        .filter((h) => h.isNewFile || h.isDeletedFile || h.isRename)
+        .map((h) => h.file),
+    );
+    for (const file of special) {
+      if ((counts.get(file) ?? 0) > 1) {
+        problems.push(
+          `File ${file} looks like a new/deleted/renamed file but appears in multiple groups.`,
+        );
+      }
+    }
+  }
+
+  if (problems.length > 0) {
+    const msg =
+      "The AI plan is not safely stageable:\n" +
+      problems.map((p) => `- ${p}`).join("\n") +
+      "\n\nRe-run to get a better plan, or stage/commit manually.";
+    throw new Error(msg);
+  }
+}
+
+function stageGroup(group: GroupPlan, sharedFiles: Set<string>): boolean {
+  const sharedHunks = group.hunks.filter((h) => sharedFiles.has(h.file));
+  const patchableSharedHunks = sharedHunks.filter(
+    (h) => !h.isNewFile && !h.isDeletedFile && !h.isRename,
+  );
+
+  if (patchableSharedHunks.length > 0) {
+    const patch = buildPatchForGroup(patchableSharedHunks);
+    if (!applyPatchToIndex(patch)) {
+      return false;
+    }
+  }
+
+  // Stage non-shared files as full files (fast and robust for new/deleted files).
+  const nonSharedFiles = group.files.filter((f) => !sharedFiles.has(f));
+  if (nonSharedFiles.length > 0) {
+    return stageFiles(nonSharedFiles);
+  }
+
+  return true;
 }
 
 function formatGroupHeader(group: GroupPlan): string {
@@ -240,34 +286,20 @@ export function formatConventionalCommit(group: GroupPlan): string {
   const scope = group.scope ? `(${group.scope})` : "";
   const header = `${group.type}${scope}: ${group.title}`;
 
-  // Build body with additional types note if present
   const bodyParts: string[] = [];
-
   if (group.body) {
     bodyParts.push(group.body);
   }
-
-  // Add note about additional change types
   if (group.additionalTypes?.length) {
-    const typesNote = `Also includes: ${group.additionalTypes.join(", ")}`;
-    bodyParts.push(typesNote);
+    bodyParts.push(`Also includes: ${group.additionalTypes.join(", ")}`);
   }
 
-  if (bodyParts.length > 0) {
-    return `${header}\n\n${bodyParts.join("\n\n")}`;
-  }
-
-  return header;
+  return bodyParts.length > 0 ? `${header}\n\n${bodyParts.join("\n\n")}` : header;
 }
 
-async function userAccepts(
-  group: GroupPlan,
-  message: string
-): Promise<boolean> {
-  // Simple stdin read for yes/no
-  // In a real implementation, you might use a library like readline
-  process.stdout.write("Commit? (y/n): ");
-  
+async function promptYesNo(question: string, defaultYes: boolean): Promise<boolean> {
+  process.stdout.write(question);
+
   return new Promise((resolve) => {
     const stdin = process.stdin;
     stdin.setRawMode(true);
@@ -279,11 +311,12 @@ async function userAccepts(
       stdin.pause();
       stdin.removeListener("data", handler);
 
-      if (char === "y" || char === "Y" || char === "\r" || char === "\n") {
-        resolve(true);
-      } else {
-        resolve(false);
+      const normalized = char.trim().toLowerCase();
+      if (!normalized) {
+        resolve(defaultYes);
+        return;
       }
+      resolve(normalized === "y" || normalized === "yes");
     };
 
     stdin.once("data", handler);
@@ -295,14 +328,13 @@ function printPlan(plan: GroupPlan[]): void {
   for (let i = 0; i < plan.length; i++) {
     const group = plan[i];
     console.log(`${i + 1}. ${formatGroupHeader(group)}`);
-    if (group.additionalTypes?.length) {
-      console.log(`   Also: ${group.additionalTypes.join(", ")}`);
-    }
     if (group.body) {
       console.log(`   ${group.body.split("\n").join("\n   ")}`);
     }
     console.log(`   Files: ${group.files.join(", ")}`);
-    console.log(`   Rationale: ${group.rationale}`);
+    if (group.rationale) {
+      console.log(`   Rationale: ${group.rationale}`);
+    }
     console.log();
   }
 }
@@ -321,5 +353,3 @@ function printSummary(committed: GroupPlan[], skipped: GroupPlan[]): void {
     }
   }
 }
-
-
