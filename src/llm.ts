@@ -514,4 +514,3 @@ function validateType(type: string): ConventionalType {
   }
   return "chore";
 }
-
