@@ -102,7 +102,54 @@ export function getUnstagedDiff(): string {
   return result.stdout.trim();
 }
 
-export function collectHunks(includeUnstaged: boolean = false): Hunk[] {
+export function getStagedPatch(): string {
+  const result = exec(["git", "diff", "--cached"]);
+  if (result.code !== 0) {
+    throw new Error(`Failed to read staged patch: ${result.stderr.trim()}`);
+  }
+  return result.stdout;
+}
+
+export function restoreStagedPatch(patch: string): boolean {
+  // Best-effort restore of the index to a prior staged state.
+  if (!clearStagingArea()) {
+    return false;
+  }
+
+  if (!patch.trim()) {
+    return true;
+  }
+
+  const proc = Bun.spawnSync({
+    cmd: ["git", "apply", "--cached", "-"],
+    stdin: encoder.encode(patch),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  return (proc.exitCode ?? 1) === 0;
+}
+
+export function listUntrackedFiles(): string[] {
+  const result = exec(["git", "ls-files", "--others", "--exclude-standard"]);
+  if (result.code !== 0) {
+    throw new Error(`Failed to list untracked files: ${result.stderr.trim()}`);
+  }
+  return result.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+export function intentToAddFiles(files: string[]): boolean {
+  if (files.length === 0) {
+    return true;
+  }
+  const result = exec(["git", "add", "-N", "--", ...files]);
+  return result.code === 0;
+}
+
+export function collectHunksFromDiff(diff: string): Hunk[] {
   const hunks: Hunk[] = [];
   const stagedDiff = getStagedDiff();
   const unstagedDiff = includeUnstaged ? getUnstagedDiff() : "";
