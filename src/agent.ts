@@ -18,6 +18,7 @@ import {
   stageFiles,
 } from "./git.js";
 import { requestGroupPlan } from "./llm.js";
+import { debugLog } from "./debug.js";
 
 export async function smartCommit(
   config: AgentConfig,

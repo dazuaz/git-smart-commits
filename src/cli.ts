@@ -9,7 +9,7 @@ function printHelp(): void {
 Creates Conventional Commit messages and commits your changes using an AI model.
 
 Usage:
-  git-smart-commit [--plan-only] [--dry-run]
+  git-smart-commit [--plan-only] [--dry-run] [--debug]
 
 Options:
   --plan-only   Print the proposed commit plan, do nothing

@@ -8,6 +8,7 @@ import type {
 } from "./types.js";
 import { CONVENTIONAL_TYPES } from "./types.js";
 import { summarizeHunks, buildPlanningChunks } from "./grouping.js";
+import { debugLog } from "./debug.js";
 
 export async function requestGroupPlan(
   config: LLMConfig,
