@@ -29,10 +29,14 @@ export async function smartCommit(
   const status = getStatusSummary();
   const repo = getRepoName();
   const branch = getBranchName(status);
+  debugLog(`repo=${repo} branch=${branch}`);
 
   const initialStagedDiff = getStagedDiff();
   const initialUnstagedDiff = getUnstagedDiff();
   const initialUntracked = listUntrackedFiles();
+  debugLog(
+    `initial: stagedChars=${initialStagedDiff.length} unstagedChars=${initialUnstagedDiff.length} untracked=${initialUntracked.length}`,
+  );
 
   if (
     !initialStagedDiff.trim() &&
@@ -55,6 +59,7 @@ export async function smartCommit(
           false,
         )
       : !hasStaged;
+  debugLog(`includeAll=${includeAll}`);
 
   const stagedSnapshot = getStagedPatch();
   let committedAny = false;
@@ -68,18 +73,23 @@ export async function smartCommit(
     const diffForPlanning = includeAll
       ? prepareAllChangesDiff()
       : initialStagedDiff;
+    debugLog(`planningDiffChars=${diffForPlanning.length}`);
 
     const hunks = collectHunksFromDiff(diffForPlanning);
     if (hunks.length === 0) {
       console.log("No diff hunks detected. Nothing to commit.");
       return;
     }
+    debugLog(
+      `parsedHunks=${hunks.length} files=${new Set(hunks.map((h) => h.file)).size}`,
+    );
 
     const plan = await requestGroupPlan(llmConfig, repo, branch, status, hunks);
     if (plan.length === 0) {
       console.log("No logical commit groups identified.");
       return;
     }
+    debugLog(`planGroups=${plan.length}`);
 
     validatePlanForSharedFiles(plan);
 
@@ -110,6 +120,9 @@ export async function smartCommit(
     for (let i = 0; i < plan.length; i++) {
       const group = plan[i];
       console.log(`\n[${i + 1}/${plan.length}] ${formatGroupHeader(group)}`);
+      debugLog(
+        `group ${group.id}: files=${group.files.length} hunks=${group.hunks.length}`,
+      );
 
       const message = formatConventionalCommit(group);
       console.log(`\nProposed commit message:\n${message}\n`);
@@ -141,6 +154,7 @@ export async function smartCommit(
       }
 
       const stagedDiff = getStagedDiff();
+      debugLog(`group ${group.id}: stagedChars=${stagedDiff.length}`);
       if (!stagedDiff.trim()) {
         console.warn("  Skipping: no changes staged");
         clearStagingArea();
@@ -169,6 +183,7 @@ export async function smartCommit(
     printSummary(committed, skipped);
   } finally {
     if (config.planOnly || config.dryRun || !committedAny) {
+      debugLog("restoring staged index snapshot");
       restoreStagedPatch(stagedSnapshot);
     } else {
       clearStagingArea();
@@ -185,6 +200,7 @@ function prepareAllChangesDiff(): string {
   if (untracked.length > 0) {
     // Make untracked files show up in `git diff` as new-file patches without
     // staging their contents yet.
+    debugLog(`intent-to-add untracked files: count=${untracked.length}`);
     intentToAddFiles(untracked);
   }
 
