@@ -18,6 +18,9 @@ export async function requestGroupPlan(
   hunks: Hunk[]
 ): Promise<GroupPlan[]> {
   const typeList = CONVENTIONAL_TYPES.join("|");
+  debugLog(
+    `planning: repo=${repo} branch=${branch} hunks=${hunks.length} files=${new Set(hunks.map((h) => h.file)).size}`,
+  );
 
   // Build chunked planning context for large commits.
   const maxChunks = 8;
@@ -40,11 +43,13 @@ export async function requestGroupPlan(
       perLineMaxChars: 220,
     });
   }
+  debugLog(`planning: chunks=${planningChunks.length} chunkChars=${chunkChars}`);
 
   // Small enough: single-pass planning.
   if (planningChunks.length <= 1) {
     // Summarize hunks to stay within token budget
     const hunkSummary = summarizeHunks(hunks, 12_000);
+    debugLog(`planning: single-pass hunkSummaryChars=${hunkSummary.length}`);
 
     const prompt = `Repository: ${repo}
 Branch: ${branch}
@@ -82,7 +87,7 @@ ${hunkSummary}`;
 
     const systemPrompt = `You are a code change planner. Your task is to split a set of diffs into logically coherent commit groups that follow Conventional Commits. Prefer small, single-purpose groups. Return strict JSON only.`;
 
-    const response = await fetchLLM(config, systemPrompt, prompt);
+    const response = await fetchLLM(config, systemPrompt, prompt, "plan(single-pass)");
 
     const groups = mapAndValidateGroups(response, hunks);
     return normalizePlanCoverage(groups, hunks);
@@ -117,6 +122,9 @@ ${hunkSummary}`;
   }> = [];
 
   for (const chunk of planningChunks) {
+    debugLog(
+      `planning: candidate chunk=${chunk.id} files=${chunk.files.length} summaryChars=${chunk.summary.length}`,
+    );
     const perChunkPrompt = `Repository: ${repo}
 Branch: ${branch}
 
@@ -132,7 +140,12 @@ ${candidateSchema}
 Diff chunk:
 ${chunk.summary}`;
 
-    const resp = await fetchLLM(config, perChunkSystem, perChunkPrompt);
+    const resp = await fetchLLM(
+      config,
+      perChunkSystem,
+      perChunkPrompt,
+      `plan(candidates:${chunk.id})`,
+    );
     const parsed = parseJSONFromLLM(resp) as { candidates?: any[]; notes?: string[] };
     perChunkCandidates.push({
       chunkId: chunk.id,
@@ -184,7 +197,7 @@ ${JSON.stringify(allHunkRefs)}
 Chunk candidates (may overlap, may be incomplete):
 ${JSON.stringify(perChunkCandidates)}`;
 
-  const mergedResp = await fetchLLM(config, mergeSystem, mergePrompt);
+  const mergedResp = await fetchLLM(config, mergeSystem, mergePrompt, "plan(merge)");
   const groups = mapAndValidateGroups(mergedResp, hunks);
   return normalizePlanCoverage(groups, hunks);
 }
@@ -378,7 +391,7 @@ Does the residual diff contain changes that should have been included in the com
   const systemPrompt = `You are a commit QA assistant. Check if the residual diff contains changes that logically belong with the commit message.`;
 
   try {
-    const response = await fetchLLM(config, systemPrompt, prompt);
+    const response = await fetchLLM(config, systemPrompt, prompt, "qa(leakage)");
     let jsonStr = response.trim();
     if (jsonStr.includes("```")) {
       const match = jsonStr.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
@@ -411,7 +424,7 @@ Return: {"ok": boolean, "suggestedMessage": "<string if any>", "reasons": ["..."
   const systemPrompt = `You are a commit QA assistant. Check that the message matches the grouped change. Suggest improvements or pass.`;
 
   try {
-    const response = await fetchLLM(config, systemPrompt, prompt);
+    const response = await fetchLLM(config, systemPrompt, prompt, "qa(message)");
     let jsonStr = response.trim();
     if (jsonStr.includes("```")) {
       const match = jsonStr.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
@@ -430,7 +443,8 @@ Return: {"ok": boolean, "suggestedMessage": "<string if any>", "reasons": ["..."
 async function fetchLLM(
   config: LLMConfig,
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  label: string = "llm"
 ): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000); // 2 minutes for planning
@@ -440,6 +454,10 @@ async function fetchLLM(
       ? `${config.baseUrl}v1/chat/completions`
       : `${config.baseUrl}/v1/chat/completions`;
 
+    const startedAt = Date.now();
+    debugLog(
+      `${label}: request start endpoint=${endpoint} model=${config.model} userPromptChars=${userPrompt.length}`,
+    );
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -461,6 +479,9 @@ async function fetchLLM(
 
     if (!response.ok) {
       const text = await response.text();
+      debugLog(
+        `${label}: request failed status=${response.status} elapsedMs=${Date.now() - startedAt} bodyChars=${text.length}`,
+      );
       throw new Error(
         `LLM API request failed (${response.status}): ${text}`
       );
@@ -472,9 +493,15 @@ async function fetchLLM(
 
     const content = json.choices?.[0]?.message?.content;
     if (!content) {
+      debugLog(
+        `${label}: empty content elapsedMs=${Date.now() - startedAt}`,
+      );
       throw new Error("LLM API returned no content.");
     }
 
+    debugLog(
+      `${label}: request ok elapsedMs=${Date.now() - startedAt} contentChars=${content.length}`,
+    );
     return content.trim();
   } finally {
     clearTimeout(timeout);
