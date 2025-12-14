@@ -384,7 +384,7 @@ export function stageFiles(files: string[]): boolean {
     return true;
   }
 
-  const result = exec(["git", "add", "--", ...files]);
+  const result = exec(["git", "add", "-A", "--", ...files]);
   return result.code === 0;
 }
 
