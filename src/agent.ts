@@ -15,6 +15,7 @@ import {
   intentToAddFiles,
   listUntrackedFiles,
   restoreStagedPatch,
+  stageAllChanges,
   stageFiles,
 } from "./git.js";
 import { requestGroupPlan } from "./llm.js";
@@ -24,6 +25,8 @@ export async function smartCommit(
   config: AgentConfig,
   llmConfig: LLMConfig,
 ): Promise<void> {
+  const interactive = config.interactive ?? false;
+  const strategy = config.strategy ?? "squash";
   ensureGitRepository();
 
   const status = getStatusSummary();
@@ -52,13 +55,11 @@ export async function smartCommit(
   // surprising commits.
   const hasStaged = initialStagedDiff.trim().length > 0;
   const hasUnstaged = initialUnstagedDiff.trim().length > 0 || initialUntracked.length > 0;
-  const includeAll =
-    hasStaged && hasUnstaged
-      ? await promptYesNo(
-          "Include unstaged/untracked changes too? (y/N): ",
-          false,
-        )
-      : !hasStaged;
+  const includeAll = hasStaged && hasUnstaged
+    ? interactive
+      ? await promptYesNo("Include unstaged/untracked changes too? (y/N): ", false)
+      : false
+    : !hasStaged;
   debugLog(`includeAll=${includeAll}`);
 
   const stagedSnapshot = getStagedPatch();
@@ -98,12 +99,45 @@ export async function smartCommit(
       return;
     }
 
-    const proceed = await promptYesNo(
-      `Proceed to ${config.dryRun ? "simulate" : "create"} ${plan.length} commit(s)? (y/N): `,
-      false,
-    );
-    if (!proceed) {
-      console.log("Aborted.");
+    if (interactive) {
+      const proceed = await promptYesNo(
+        `Proceed to ${config.dryRun ? "simulate" : "create"} ${strategy === "squash" ? 1 : plan.length} commit(s)? (y/N): `,
+        false,
+      );
+      if (!proceed) {
+        console.log("Aborted.");
+        return;
+      }
+    }
+
+    if (strategy === "squash") {
+      const message = formatSquashedCommit(plan);
+      console.log(`\nProposed squashed commit message:\n${message}\n`);
+
+      if (includeAll) {
+        // Plan was derived from working tree diff; stage everything for the single commit.
+        if (!stageAllChanges()) {
+          throw new Error("Failed to stage changes for squashed commit.");
+        }
+      }
+
+      const stagedDiff = getStagedDiff();
+      debugLog(`squash: stagedChars=${stagedDiff.length}`);
+      if (!stagedDiff.trim()) {
+        console.warn("No changes staged. Nothing to commit.");
+        return;
+      }
+
+      if (config.dryRun) {
+        console.log("  [DRY RUN] Would create 1 squashed commit");
+        return;
+      }
+
+      const ok = commitWithMessage(message);
+      if (ok) {
+        committedAny = true;
+        console.log(`Created 1 squashed commit.`);
+      }
       return;
     }
 
@@ -131,11 +165,13 @@ export async function smartCommit(
         console.log(`Rationale: ${group.rationale}`);
       }
 
-      const accepted = await promptYesNo("Commit? (y/N): ", false);
-      if (!accepted) {
-        console.log("  Skipped by user");
-        skipped.push(group);
-        continue;
+      if (interactive) {
+        const accepted = await promptYesNo("Commit? (y/N): ", false);
+        if (!accepted) {
+          console.log("  Skipped by user");
+          skipped.push(group);
+          continue;
+        }
       }
 
       // Stage the changes for this group.
@@ -312,6 +348,64 @@ export function formatConventionalCommit(group: GroupPlan): string {
   }
 
   return bodyParts.length > 0 ? `${header}\n\n${bodyParts.join("\n\n")}` : header;
+}
+
+function formatSquashedCommit(plan: GroupPlan[]): string {
+  if (plan.length === 0) {
+    return "chore: smart commit";
+  }
+  if (plan.length === 1) {
+    return formatConventionalCommit(plan[0]);
+  }
+
+  const primary = selectPrimaryGroup(plan);
+  const scope = primary.scope ? `(${primary.scope})` : "";
+  const header = `${primary.type}${scope}: ${primary.title}`;
+
+  const bodyParts: string[] = [];
+  if (primary.body) {
+    bodyParts.push(primary.body);
+  }
+
+  bodyParts.push(
+    "Includes:\n" +
+      plan
+        .filter((g) => g.id !== primary.id)
+        .map((g) => {
+          const line = `- ${formatGroupHeader(g)}`;
+          return g.body ? `${line}\n  ${g.body.split("\n").join("\n  ")}` : line;
+        })
+        .join("\n"),
+  );
+
+  return `${header}\n\n${bodyParts.join("\n\n")}`;
+}
+
+function selectPrimaryGroup(plan: GroupPlan[]): GroupPlan {
+  const typePriority: Record<string, number> = {
+    feat: 100,
+    fix: 90,
+    perf: 80,
+    refactor: 70,
+    test: 60,
+    docs: 50,
+    ci: 40,
+    build: 30,
+    chore: 20,
+    style: 10,
+    revert: 0,
+  };
+
+  const scoreGroup = (g: GroupPlan) => {
+    const typeScore = typePriority[g.type] ?? 25;
+    const delta = g.hunks.reduce(
+      (sum, h) => sum + (h.linesAdded ?? 0) + (h.linesRemoved ?? 0),
+      0,
+    );
+    return typeScore * 1_000_000 + delta;
+  };
+
+  return plan.reduce((best, g) => (scoreGroup(g) > scoreGroup(best) ? g : best));
 }
 
 async function promptYesNo(question: string, defaultYes: boolean): Promise<boolean> {

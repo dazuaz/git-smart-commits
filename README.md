@@ -32,15 +32,18 @@ git-smart-commit
 ```
 
 The CLI will:
-1. Read your diffs (staged changes by default; it will ask before including unstaged/untracked when both exist)
+1. Read your diffs (staged changes by default; use `--interactive` to be prompted to include unstaged/untracked when both exist)
 2. Ask the model for a logical commit plan (1..N Conventional Commits)
 3. Show the plan and proposed messages
-4. Stage+commit each group (with a confirmation prompt per commit)
+4. Create 1 squashed commit by default (use `--split` for 1..N commits)
 
 **Flags:**
 - `--plan-only` &mdash; print the proposed plan/messages, do nothing
 - `--dry-run` &mdash; simulate staging/commits without committing
 - `--debug` &mdash; print progress/timing to stderr (useful if it feels stuck)
+- `--interactive` &mdash; prompt before including/committing changes
+- `--squash` &mdash; create 1 squashed commit (default)
+- `--split` &mdash; create 1..N commits from the plan instead of squashing
 
 **Examples:**
 ```bash
@@ -49,6 +52,9 @@ git-smart-commit --plan-only
 
 # Simulate what would be committed
 git-smart-commit --dry-run
+
+# Create multiple commits (one per group)
+git-smart-commit --split --interactive
 ```
 
 ### Suggested shell aliases

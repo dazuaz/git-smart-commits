@@ -53,14 +53,14 @@ export async function requestGroupPlan(
     const hunkSummary = summarizeHunks(hunks, 5_000);
     debugLog(`planning: single-pass hunkSummaryChars=${hunkSummary.length}`);
 
-    const prompt = `Repository: ${repo}
-Branch: ${branch}
     const filesCount = new Set(hunks.map((h) => h.file)).size;
     const groupGuidance =
       filesCount <= 10
         ? "Prefer 1 group unless there are clearly separate concerns; max 3 groups."
         : "Prefer small, single-purpose groups; avoid over-splitting.";
 
+    const prompt = `Repository: ${repo}
+Branch: ${branch}
 Status:
 ${status}
 
@@ -84,9 +84,9 @@ Rules:
       "scope": "optional-scope",
       "title": "short summary",
       "body": "optional body, wrap ~72 cols",
+      "rationale": "short why",
       "files": ["path/a.ts", "path/b.test.ts"],
       "hunks": [{"file":"path/a.ts","hunkIndex":3}, ...]
-      "rationale": "short why",
     }
   ]
 }
@@ -199,9 +199,9 @@ Rules:
 - If uncertain, create a "chore" group titled "update misc changes" rather than dropping hunks.
 - Keep titles under 60 chars, imperative, lower case, no trailing punctuation.
 - additionalTypes max 2; only when truly spanning multiple categories.
+- Keep "rationale" concise (<= 120 chars). Omit "body" unless it adds important context; if present, keep it <= 2 short lines.
 
 All hunks (must be fully covered):
-- Keep "rationale" concise (<= 120 chars). Omit "body" unless it adds important context; if present, keep it <= 2 short lines.
 ${JSON.stringify(allHunkRefs)}
 
 Chunk candidates (may overlap, may be incomplete):

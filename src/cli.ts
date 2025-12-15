@@ -9,12 +9,15 @@ function printHelp(): void {
 Creates Conventional Commit messages and commits your changes using an AI model.
 
 Usage:
-  git-smart-commit [--plan-only] [--dry-run] [--debug]
+  git-smart-commit [--plan-only] [--dry-run] [--debug] [--interactive] [--squash|--split]
 
 Options:
   --plan-only   Print the proposed commit plan, do nothing
   --dry-run     Show what would be committed, do not commit
   --debug       Print progress/timing to stderr
+  --interactive Prompt before committing changes
+  --squash      Create 1 squashed commit (default)
+  --split       Create 1..N commits from the plan
   --help        Show this help
 
 Environment:
@@ -59,9 +62,18 @@ async function main() {
 
   const llmConfig: LLMConfig = { apiKey, model, temperature, baseUrl };
 
+  const hasSquashFlag = flags.has("--squash");
+  const hasSplitFlag = flags.has("--split");
+  if (hasSquashFlag && hasSplitFlag) {
+    console.error("Use either --squash or --split, not both.");
+    process.exit(1);
+  }
+
   const config: AgentConfig = {
     planOnly: flags.has("--plan-only"),
     dryRun: flags.has("--dry-run"),
+    interactive: flags.has("--interactive"),
+    strategy: hasSplitFlag ? "split" : "squash",
   };
 
   if (config.planOnly && config.dryRun) {

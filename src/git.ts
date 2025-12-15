@@ -387,6 +387,11 @@ export function stageFiles(files: string[]): boolean {
   return result.code === 0;
 }
 
+export function stageAllChanges(): boolean {
+  const result = exec(["git", "add", "-A"]);
+  return result.code === 0;
+}
+
 export function unstageFiles(files: string[]): boolean {
   if (files.length === 0) {
     return true;

@@ -41,6 +41,8 @@ export type GroupPlan = {
 export type AgentConfig = {
   planOnly: boolean; // Print the proposed plan, do nothing
   dryRun: boolean; // Show what would be committed without committing
+  strategy?: "squash" | "split"; // squash groups into 1 commit or create 1..N commits
+  interactive?: boolean; // Prompt before including/committing changes
 };
 
 export type LLMConfig = {
