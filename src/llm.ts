@@ -24,23 +24,23 @@ export async function requestGroupPlan(
 
   // Build chunked planning context for large commits.
   const maxChunks = 8;
-  let chunkChars = 12_000;
+  let chunkChars = 9_000;
   let planningChunks = buildPlanningChunks(hunks, {
     maxChunkChars: chunkChars,
-    maxTotalChars: 60_000,
-    perHunkMaxChangedLines: 28,
-    perHunkMaxHeaderLines: 2,
-    perLineMaxChars: 220,
+    maxTotalChars: 45_000,
+    perHunkMaxChangedLines: 16,
+    perHunkMaxHeaderLines: 1,
+    perLineMaxChars: 160,
   });
 
   while (planningChunks.length > maxChunks && chunkChars < 30_000) {
     chunkChars += 6_000;
     planningChunks = buildPlanningChunks(hunks, {
       maxChunkChars: chunkChars,
-      maxTotalChars: 90_000,
-      perHunkMaxChangedLines: 28,
-      perHunkMaxHeaderLines: 2,
-      perLineMaxChars: 220,
+      maxTotalChars: 75_000,
+      perHunkMaxChangedLines: 16,
+      perHunkMaxHeaderLines: 1,
+      perLineMaxChars: 160,
     });
   }
   debugLog(`planning: chunks=${planningChunks.length} chunkChars=${chunkChars}`);
@@ -48,7 +48,7 @@ export async function requestGroupPlan(
   // Small enough: single-pass planning.
   if (planningChunks.length <= 1) {
     // Summarize hunks to stay within token budget
-    const hunkSummary = summarizeHunks(hunks, 12_000);
+    const hunkSummary = summarizeHunks(hunks, 5_000);
     debugLog(`planning: single-pass hunkSummaryChars=${hunkSummary.length}`);
 
     const prompt = `Repository: ${repo}
