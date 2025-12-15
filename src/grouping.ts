@@ -129,7 +129,7 @@ export function formatHunkForPlanning(
     return (l.startsWith("+") && !l.startsWith("++")) || (l.startsWith("-") && !l.startsWith("--"));
   });
 
-  const signal = extractSignalLines(changedLinesAll).slice(0, 10);
+  const signal = extractSignalLines(changedLinesAll).slice(0, 6);
   const { picked, omittedCount } = pickChangedLines(changedLinesAll, perHunkMaxChangedLines);
 
   const lines: string[] = [];
