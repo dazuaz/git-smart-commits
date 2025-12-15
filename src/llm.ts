@@ -53,18 +53,24 @@ export async function requestGroupPlan(
 
     const prompt = `Repository: ${repo}
 Branch: ${branch}
+    const filesCount = new Set(hunks.map((h) => h.file)).size;
+    const groupGuidance =
+      filesCount <= 10
+        ? "Prefer 1 group unless there are clearly separate concerns; max 3 groups."
+        : "Prefer small, single-purpose groups; avoid over-splitting.";
+
 Status:
 ${status}
 
 Rules:
 - Types: ${typeList}
-- Aim for single-purpose commits when possible.
+- ${groupGuidance}
 - May create 1..N groups. Merge tiny trivial hunks into nearest logical group.
 - Keep the first line under 60 chars, imperative, lower case, no trailing punctuation.
 - Include scope only if clarifying.
 - For groups with multiple significant change types, include "additionalTypes" (max 2).
   Only use additionalTypes when changes genuinely span multiple categories (e.g., feat + fix, refactor + perf).
-- Provide a rationale per group.
+- Keep "rationale" concise (<= 120 chars). Omit "body" unless it adds important context; if present, keep it <= 2 short lines.
 - Return JSON only, matching this schema:
 
 {
@@ -78,6 +84,7 @@ Rules:
       "body": "optional body, wrap ~72 cols",
       "files": ["path/a.ts", "path/b.test.ts"],
       "hunks": [{"file":"path/a.ts","hunkIndex":3}, ...]
+      "rationale": "short why",
     }
   ]
 }
@@ -103,7 +110,7 @@ ${hunkSummary}`;
       "additionalTypes": ["fix", "refactor"],
       "scope": "optional-scope",
       "title": "short summary",
-      "rationale": "why these changes belong together",
+      "rationale": "why these changes belong together (<= 120 chars)",
       "files": ["path/a.ts", "path/b.test.ts"],
       "hunks": [{"file":"path/a.ts","hunkIndex":3}]
     }
@@ -185,13 +192,14 @@ Now produce the FINAL plan in this exact JSON schema:
 
 Rules:
 - Types: ${typeList}
-- Prefer single-purpose commits when possible.
+- Prefer single-purpose commits when possible and avoid over-splitting.
 - Assign EVERY hunk reference below to exactly one group.
 - If uncertain, create a "chore" group titled "update misc changes" rather than dropping hunks.
 - Keep titles under 60 chars, imperative, lower case, no trailing punctuation.
 - additionalTypes max 2; only when truly spanning multiple categories.
 
 All hunks (must be fully covered):
+- Keep "rationale" concise (<= 120 chars). Omit "body" unless it adds important context; if present, keep it <= 2 short lines.
 ${JSON.stringify(allHunkRefs)}
 
 Chunk candidates (may overlap, may be incomplete):
