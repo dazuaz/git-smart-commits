@@ -333,4 +333,3 @@ export function inferScopeFromFile(file: string): string | undefined {
   }
   return undefined;
 }
-
