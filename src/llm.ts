@@ -10,6 +10,8 @@ import { CONVENTIONAL_TYPES } from "./types.js";
 import { summarizeHunks, buildPlanningChunks } from "./grouping.js";
 import { debugLog } from "./debug.js";
 
+const DEFAULT_MAX_TOKENS = 900;
+
 export async function requestGroupPlan(
   config: LLMConfig,
   repo: string,
@@ -463,8 +465,9 @@ async function fetchLLM(
       : `${config.baseUrl}/v1/chat/completions`;
 
     const startedAt = Date.now();
+    const maxTokens = DEFAULT_MAX_TOKENS;
     debugLog(
-      `${label}: request start endpoint=${endpoint} model=${config.model} userPromptChars=${userPrompt.length}`,
+      `${label}: request start endpoint=${endpoint} model=${config.model} userPromptChars=${userPrompt.length} maxTokens=${maxTokens}`,
     );
     const response = await fetch(endpoint, {
       method: "POST",
@@ -479,7 +482,7 @@ async function fetchLLM(
           { role: "user", content: userPrompt },
         ],
         temperature: config.temperature,
-        max_tokens: 2000, // More tokens for planning
+        max_tokens: maxTokens,
         n: 1,
       }),
       signal: controller.signal,
