@@ -11,6 +11,7 @@ import { summarizeHunks, buildPlanningChunks } from "./grouping.js";
 import { debugLog } from "./debug.js";
 
 const DEFAULT_MAX_TOKENS = 900;
+const GPT5_MAX_OUTPUT_TOKENS = 2_000;
 
 export async function requestGroupPlan(
   config: LLMConfig,
@@ -236,14 +237,138 @@ export async function critiqueAndRefinePlan(
 }
 
 function parseJSONFromLLM(response: string): any {
-  let jsonStr = response.trim();
-  if (jsonStr.includes("```")) {
-    const match = jsonStr.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
-    if (match) {
-      jsonStr = match[1];
+  const trimmed = response.trim();
+
+  // 1) Prefer fenced JSON blocks when present.
+  if (trimmed.includes("```")) {
+    const match = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (match?.[1]) {
+      const fenced = match[1].trim();
+      const extracted = extractFirstJSONValue(fenced) ?? fenced;
+      return tryParseJSON(extracted);
     }
   }
-  return JSON.parse(jsonStr);
+
+  // 2) Try to extract the first complete JSON value from the full response.
+  const extracted = extractFirstJSONValue(trimmed) ?? trimmed;
+  return tryParseJSON(extracted);
+}
+
+function tryParseJSON(jsonStr: string): any {
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    const normalized = escapeUnescapedNewlinesInStrings(jsonStr);
+    const withoutTrailingCommas = normalized.replace(/,\s*([}\]])/g, "$1");
+    return JSON.parse(withoutTrailingCommas);
+  }
+}
+
+function escapeUnescapedNewlinesInStrings(input: string): string {
+  let out = "";
+  let inString = false;
+  let escaping = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        out += ch;
+        continue;
+      }
+      if (ch === "\\") {
+        escaping = true;
+        out += ch;
+        continue;
+      }
+      if (ch === "\"") {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      if (ch === "\n") {
+        out += "\\n";
+        continue;
+      }
+      if (ch === "\r") {
+        // Drop CR; if this was CRLF, the LF will be handled above.
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      out += ch;
+      continue;
+    }
+
+    out += ch;
+  }
+
+  return out;
+}
+
+function extractFirstJSONValue(text: string): string | null {
+  const start = findFirstJSONStart(text);
+  if (start < 0) {
+    return null;
+  }
+
+  const open = text[start];
+  const close = open === "{" ? "}" : "]";
+
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (ch === open) {
+      depth++;
+      continue;
+    }
+    if (ch === close) {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1).trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function findFirstJSONStart(text: string): number {
+  const obj = text.indexOf("{");
+  const arr = text.indexOf("[");
+  if (obj === -1) return arr;
+  if (arr === -1) return obj;
+  return Math.min(obj, arr);
 }
 
 function mapAndValidateGroups(response: string, hunks: Hunk[]): GroupPlan[] {
@@ -460,31 +585,112 @@ async function fetchLLM(
   const timeout = setTimeout(() => controller.abort(), 120_000); // 2 minutes for planning
 
   try {
-    const endpoint = config.baseUrl.endsWith("/")
+    const chatEndpoint = config.baseUrl.endsWith("/")
       ? `${config.baseUrl}v1/chat/completions`
       : `${config.baseUrl}/v1/chat/completions`;
+    const responsesEndpoint = config.baseUrl.endsWith("/")
+      ? `${config.baseUrl}v1/responses`
+      : `${config.baseUrl}/v1/responses`;
 
     const startedAt = Date.now();
-    const maxTokens = DEFAULT_MAX_TOKENS;
+    const maxTokens = getMaxOutputTokensForModel(config.model);
     debugLog(
-      `${label}: request start endpoint=${endpoint} model=${config.model} userPromptChars=${userPrompt.length} maxTokens=${maxTokens}`,
+      `${label}: request start model=${config.model} userPromptChars=${userPrompt.length} maxTokens=${maxTokens}`,
     );
-    const response = await fetch(endpoint, {
+
+    if (prefersResponsesAPI(config.model)) {
+      try {
+        const requestBody: Record<string, unknown> = {
+          model: config.model,
+          input: [
+            { role: "developer", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          reasoning: { effort: "low" },
+          // Token limiting (supported by Responses API).
+          max_output_tokens: maxTokens,
+        };
+
+        debugLog(`${label}: responses request start endpoint=${responsesEndpoint}`);
+        const response = await fetch(responsesEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          debugLog(
+            `${label}: responses request failed status=${response.status} elapsedMs=${Date.now() - startedAt} bodyChars=${text.length}`,
+          );
+
+          // Some OpenAI-compatible endpoints may not support Responses API, or may
+          // differ on parameters; fall back to Chat Completions.
+          throw new Error(
+            `LLM API request failed (${response.status}): ${text}`,
+          );
+        }
+
+        const json = (await response.json()) as any;
+        const content = extractResponsesOutputText(json);
+        if (!content) {
+          debugLog(`${label}: responses no text output: ${summarizeResponseShape(json)}`);
+          debugLog(`${label}: responses first output item: ${previewJSON(json?.output?.[0])}`);
+          debugLog(
+            `${label}: responses empty content elapsedMs=${Date.now() - startedAt}`,
+          );
+          throw new Error("LLM API returned no text content.");
+        }
+
+        debugLog(
+          `${label}: responses request ok elapsedMs=${Date.now() - startedAt} contentChars=${content.length}`,
+        );
+        return content.trim();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        const canFallback = !isOpenAIBaseUrl(config.baseUrl);
+        debugLog(
+          `${label}: responses failed${canFallback ? "; falling back to chat completions" : ""}: ${msg}`,
+        );
+        if (!canFallback) {
+          throw error;
+        }
+      }
+    }
+
+    const requestBody: Record<string, unknown> = {
+      model: config.model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      n: 1,
+    };
+
+    // gpt-5 models currently support only the default temperature; omit to avoid 400s.
+    if (supportsTemperature(config.model)) {
+      requestBody.temperature = config.temperature;
+    }
+
+    // gpt-5 models use `max_completion_tokens` instead of `max_tokens`.
+    if (usesMaxCompletionTokens(config.model)) {
+      requestBody.max_completion_tokens = maxTokens;
+    } else {
+      requestBody.max_tokens = maxTokens;
+    }
+
+    debugLog(`${label}: chat request start endpoint=${chatEndpoint}`);
+    const response = await fetch(chatEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: config.temperature,
-        max_tokens: maxTokens,
-        n: 1,
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
 
@@ -502,12 +708,13 @@ async function fetchLLM(
       choices: Array<{ message?: { content?: string } }>;
     };
 
-    const content = json.choices?.[0]?.message?.content;
+    const content = extractChatCompletionsOutputText(json);
     if (!content) {
+      debugLog(`${label}: chat no text output: ${summarizeResponseShape(json)}`);
       debugLog(
         `${label}: empty content elapsedMs=${Date.now() - startedAt}`,
       );
-      throw new Error("LLM API returned no content.");
+      throw new Error("LLM API returned no text content.");
     }
 
     debugLog(
@@ -517,6 +724,165 @@ async function fetchLLM(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function extractChatCompletionsOutputText(json: any): string {
+  const content = json?.choices?.[0]?.message?.content;
+  if (typeof content === "string") {
+    return content.trim();
+  }
+  // Some OpenAI-compatible APIs may return content parts.
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const c of content) {
+      if (!c || typeof c !== "object") continue;
+      if (typeof c.text === "string") parts.push(c.text);
+      if (typeof c.content === "string") parts.push(c.content);
+    }
+    return parts.join("").trim();
+  }
+  return "";
+}
+
+function extractResponsesOutputText(json: any): string {
+  if (!json || typeof json !== "object") {
+    return "";
+  }
+
+  // Some SDKs expose `output_text`, but the raw API response reliably has `output`.
+  if (typeof json.output_text === "string" && json.output_text.trim()) {
+    return json.output_text;
+  }
+
+  const output = json.output;
+  if (!Array.isArray(output)) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    // Most commonly: { type: "message", role: "assistant", content: [{type:"output_text", text:"..."}] }
+    if (item.type === "message") {
+      const content = item.content;
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          if (!c || typeof c !== "object") continue;
+          if (
+            (c.type === "output_text" || c.type === "text") &&
+            typeof c.text === "string"
+          ) {
+            parts.push(c.text);
+          }
+        }
+        continue;
+      }
+    }
+
+    // Some variants may include top-level text outputs.
+    if (
+      (item.type === "output_text" || item.type === "text") &&
+      typeof item.text === "string"
+    ) {
+      parts.push(item.text);
+      continue;
+    }
+
+    // Last resort: walk the item for any {type: *text, text: "..."} pairs.
+    parts.push(...extractTextPairsFromUnknown(item));
+  }
+
+  return parts.join("").trim();
+}
+
+function extractTextPairsFromUnknown(value: unknown): string[] {
+  const out: string[] = [];
+  const stack: unknown[] = [value];
+  const seen = new Set<any>();
+
+  while (stack.length) {
+    const v = stack.pop();
+    if (!v || typeof v !== "object") continue;
+    if (seen.has(v as any)) continue;
+    seen.add(v as any);
+
+    if (Array.isArray(v)) {
+      for (const item of v) stack.push(item);
+      continue;
+    }
+
+    const obj = v as Record<string, unknown>;
+    const type = obj.type;
+    const text = obj.text;
+    if (
+      (type === "output_text" ||
+        type === "text" ||
+        (typeof type === "string" && type.toLowerCase().endsWith("_text"))) &&
+      typeof text === "string" &&
+      text.trim()
+    ) {
+      out.push(text);
+    }
+
+    for (const key of Object.keys(obj)) {
+      stack.push(obj[key]);
+    }
+  }
+
+  return out;
+}
+
+function summarizeResponseShape(json: any): string {
+  try {
+    const keys = json && typeof json === "object" ? Object.keys(json) : [];
+    const output = json?.output;
+    const outputTypes = Array.isArray(output)
+      ? output
+          .map((o: any) => (o && typeof o === "object" ? String(o.type) : typeof o))
+          .slice(0, 8)
+      : [];
+    return `keys=[${keys.join(",")}] outputTypes=[${outputTypes.join(",")}]`;
+  } catch {
+    return "(uninspectable)";
+  }
+}
+
+function previewJSON(value: unknown, maxChars: number = 1200): string {
+  try {
+    const s = JSON.stringify(value);
+    if (!s) return "";
+    return s.length > maxChars ? `${s.slice(0, maxChars)}…` : s;
+  } catch {
+    return "(unserializable)";
+  }
+}
+
+function usesMaxCompletionTokens(model: string): boolean {
+  return /^gpt-5/i.test(model.trim());
+}
+
+function supportsTemperature(model: string): boolean {
+  return !/^gpt-5/i.test(model.trim());
+}
+
+function prefersResponsesAPI(model: string): boolean {
+  // The OpenAI docs recommend using the Responses API for GPT-5 models.
+  return /^gpt-5/i.test(model.trim());
+}
+
+function getMaxOutputTokensForModel(model: string): number {
+  return prefersResponsesAPI(model) ? GPT5_MAX_OUTPUT_TOKENS : DEFAULT_MAX_TOKENS;
+}
+
+function isOpenAIBaseUrl(baseUrl: string): boolean {
+  const normalized = baseUrl.trim().toLowerCase();
+  return (
+    normalized === "https://api.openai.com" ||
+    normalized === "https://api.openai.com/" ||
+    normalized.endsWith("api.openai.com")
+  );
 }
 
 function validateType(type: string): ConventionalType {

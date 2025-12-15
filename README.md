@@ -7,8 +7,8 @@ A lightweight Bun-powered CLI that uses an AI model to produce clean Conventiona
 - An OpenAI-compatible API key exported as `OPENAI_API_KEY`
 
 Optional environment variables:
-- `GIT_SMART_MODEL` or `OPENAI_MODEL` to override the default (`gpt-4o-mini`)
-- `GIT_SMART_TEMPERATURE` or `OPENAI_TEMPERATURE` (defaults to `0.2`)
+- `GIT_SMART_MODEL` or `OPENAI_MODEL` to override the default (`gpt-5-nano-2025-08-07`)
+- `GIT_SMART_TEMPERATURE` or `OPENAI_TEMPERATURE` (defaults to `1`; ignored by some models like `gpt-5-nano-2025-08-07`)
 - `OPENAI_BASE_URL` if you are using an OpenAI-compatible endpoint
 
 ## Install & build
@@ -30,6 +30,8 @@ Run the tool from inside a git repository with changes:
 ```bash
 git-smart-commit
 ```
+
+**API note:** For GPT‑5 models, the tool uses the OpenAI **Responses API** (recommended in the docs). For other models and some OpenAI‑compatible endpoints, it falls back to **Chat Completions**.
 
 The CLI will:
 1. Read your diffs (staged changes by default; use `--interactive` to be prompted to include unstaged/untracked when both exist)

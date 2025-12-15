@@ -22,8 +22,8 @@ Options:
 
 Environment:
   OPENAI_API_KEY                 Required
-  GIT_SMART_MODEL / OPENAI_MODEL  Model name (default: gpt-4o-mini)
-  GIT_SMART_TEMPERATURE / OPENAI_TEMPERATURE (default: 0.2)
+  GIT_SMART_MODEL / OPENAI_MODEL  Model name (default: gpt-5-nano-2025-08-07)
+  GIT_SMART_TEMPERATURE / OPENAI_TEMPERATURE (default: 1)
   GIT_SMART_BASE_URL / OPENAI_BASE_URL (default: https://api.openai.com)
   GIT_SMART_DEBUG=1              Enable debug logging
 `);
@@ -51,9 +51,9 @@ async function main() {
   const model =
     process.env.GIT_SMART_MODEL?.trim() ||
     process.env.OPENAI_MODEL?.trim() ||
-    "gpt-4o-mini";
+    "gpt-5-nano-2025-08-07";
   const temperature = parseFloat(
-    process.env.GIT_SMART_TEMPERATURE ?? process.env.OPENAI_TEMPERATURE ?? "0.2",
+    process.env.GIT_SMART_TEMPERATURE ?? process.env.OPENAI_TEMPERATURE ?? "1",
   );
   const baseUrl =
     process.env.GIT_SMART_BASE_URL?.trim() ||
