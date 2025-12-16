@@ -1,6 +1,6 @@
 # git-smart-commits
 
-A lightweight Bun-powered CLI that uses an AI model to produce clean Conventional Commit messages and commit your changes. It automatically decides whether your change set should be 1 commit or multiple logical commits.
+A lightweight Bun-powered CLI that uses an AI model to produce clean Conventional Commit messages and commit your changes. By default it creates 1 squashed commit; with `--split` it can create 1..N logical commits.
 
 ## Prerequisites
 - [Bun](https://bun.sh/) 1.3 or newer
@@ -34,10 +34,10 @@ git-smart-commit
 **API note:** For GPT‑5 models, the tool uses the OpenAI **Responses API** (recommended in the docs). For other models and some OpenAI‑compatible endpoints, it falls back to **Chat Completions**.
 
 The CLI will:
-1. Read your diffs (staged changes by default; use `--interactive` to be prompted to include unstaged/untracked when both exist)
-2. Ask the model for a logical commit plan (1..N Conventional Commits)
-3. Show the plan and proposed messages
-4. Create 1 squashed commit by default (use `--split` for 1..N commits)
+1. Choose what to include (staged by default; if only unstaged exists it uses that; use `--interactive` to be prompted when both staged and unstaged exist)
+2. Ask the model for either a single squashed commit message (default) or a 1..N commit plan (`--split`)
+3. Show the proposed message(s)
+4. Commit (non-interactive by default; use `--interactive` to confirm)
 
 **Flags:**
 - `--plan-only` &mdash; print the proposed plan/messages, do nothing
@@ -49,7 +49,7 @@ The CLI will:
 
 **Examples:**
 ```bash
-# Preview the commit plan without committing
+# Preview the squashed commit message without committing
 git-smart-commit --plan-only
 
 # Simulate what would be committed
@@ -104,3 +104,4 @@ Plan:
 - "Missing OPENAI_API_KEY": export your API key before running `git-smart-commit`
 - Empty diff: make sure you have local changes before invoking the command
 - API errors: check connectivity and confirm the model name is valid for your key
+- `Failed to parse LLM response as JSON`: this only affects `--split`; try the default squash mode or rerun with `--debug` to capture details
