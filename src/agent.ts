@@ -18,7 +18,7 @@ import {
   stageAllChanges,
   stageFiles,
 } from "./git.js";
-import { requestGroupPlan } from "./llm.js";
+import { requestGroupPlan, requestSquashCommitMessage } from "./llm.js";
 import { debugLog } from "./debug.js";
 
 export async function smartCommit(
@@ -85,37 +85,35 @@ export async function smartCommit(
       `parsedHunks=${hunks.length} files=${new Set(hunks.map((h) => h.file)).size}`,
     );
 
-    const plan = await requestGroupPlan(llmConfig, repo, branch, status, hunks);
-    if (plan.length === 0) {
-      console.log("No logical commit groups identified.");
-      return;
-    }
-    debugLog(`planGroups=${plan.length}`);
-
-    validatePlanForSharedFiles(plan);
-
-    printPlan(plan);
-    if (config.planOnly) {
-      return;
-    }
-
-    if (interactive) {
-      const proceed = await promptYesNo(
-        `Proceed to ${config.dryRun ? "simulate" : "create"} ${strategy === "squash" ? 1 : plan.length} commit(s)? (y/N): `,
-        false,
+    if (strategy === "squash") {
+      const message = await requestSquashCommitMessage(
+        llmConfig,
+        repo,
+        branch,
+        status,
+        hunks,
       );
-      if (!proceed) {
-        console.log("Aborted.");
+
+      console.log("\n=== Squash Commit ===\n");
+      console.log(`Proposed commit message:\n${message}\n`);
+      console.log(`Files: ${[...new Set(hunks.map((h) => h.file))].join(", ")}`);
+
+      if (config.planOnly) {
         return;
       }
-    }
 
-    if (strategy === "squash") {
-      const message = formatSquashedCommit(plan);
-      console.log(`\nProposed squashed commit message:\n${message}\n`);
+      if (interactive) {
+        const proceed = await promptYesNo(
+          `Proceed to ${config.dryRun ? "simulate" : "create"} 1 commit? (y/N): `,
+          false,
+        );
+        if (!proceed) {
+          console.log("Aborted.");
+          return;
+        }
+      }
 
       if (includeAll) {
-        // Plan was derived from working tree diff; stage everything for the single commit.
         if (!stageAllChanges()) {
           throw new Error("Failed to stage changes for squashed commit.");
         }
@@ -136,9 +134,34 @@ export async function smartCommit(
       const ok = commitWithMessage(message);
       if (ok) {
         committedAny = true;
-        console.log(`Created 1 squashed commit.`);
+        console.log("Created 1 squashed commit.");
       }
       return;
+    }
+
+    const plan = await requestGroupPlan(llmConfig, repo, branch, status, hunks);
+    if (plan.length === 0) {
+      console.log("No logical commit groups identified.");
+      return;
+    }
+    debugLog(`planGroups=${plan.length}`);
+
+    validatePlanForSharedFiles(plan);
+
+    printPlan(plan);
+    if (config.planOnly) {
+      return;
+    }
+
+    if (interactive) {
+      const proceed = await promptYesNo(
+        `Proceed to ${config.dryRun ? "simulate" : "create"} ${plan.length} commit(s)? (y/N): `,
+        false,
+      );
+      if (!proceed) {
+        console.log("Aborted.");
+        return;
+      }
     }
 
     const fileGroupCounts = countFilesAcrossGroups(plan);

@@ -11,7 +11,43 @@ import { summarizeHunks, buildPlanningChunks } from "./grouping.js";
 import { debugLog } from "./debug.js";
 
 const DEFAULT_MAX_TOKENS = 900;
-const GPT5_MAX_OUTPUT_TOKENS = 2_000;
+const GPT5_MAX_OUTPUT_TOKENS = 4_000;
+
+export async function requestSquashCommitMessage(
+  config: LLMConfig,
+  repo: string,
+  branch: string,
+  status: string,
+  hunks: Hunk[],
+): Promise<string> {
+  const typeList = CONVENTIONAL_TYPES.join("|");
+  const hunkSummary = summarizeHunks(hunks, 6_000);
+
+  const prompt = `Repository: ${repo}
+Branch: ${branch}
+Status:
+${status}
+
+Task:
+Write ONE Conventional Commit message for squashing ALL the changes below into a single commit.
+
+Rules:
+- Use types: ${typeList}
+- First line: <type>(optional scope): <title>
+- Title: imperative, lower case, <= 60 chars, no trailing punctuation
+- Include scope only if clarifying
+- Optional body: <= 2 short lines, wrap ~72 cols; omit if not needed
+- Return ONLY the commit message text (no code fences, no JSON, no commentary)
+
+Diff hunks:
+${hunkSummary}`;
+
+  const systemPrompt =
+    "You are a senior engineer writing concise Conventional Commits for a single squashed commit.";
+
+  const response = await fetchLLM(config, systemPrompt, prompt, "squash(message)");
+  return normalizeCommitMessageText(response);
+}
 
 export async function requestGroupPlan(
   config: LLMConfig,
@@ -257,11 +293,80 @@ function parseJSONFromLLM(response: string): any {
 function tryParseJSON(jsonStr: string): any {
   try {
     return JSON.parse(jsonStr);
-  } catch {
+  } catch (error) {
     const normalized = escapeUnescapedNewlinesInStrings(jsonStr);
     const withoutTrailingCommas = normalized.replace(/,\s*([}\]])/g, "$1");
-    return JSON.parse(withoutTrailingCommas);
+    try {
+      return JSON.parse(withoutTrailingCommas);
+    } catch {
+      const repaired = repairTruncatedJSON(withoutTrailingCommas);
+      if (repaired && repaired !== withoutTrailingCommas) {
+        return JSON.parse(repaired);
+      }
+      throw error;
+    }
   }
+}
+
+function repairTruncatedJSON(input: string): string {
+  const start = findFirstJSONStart(input);
+  if (start < 0) {
+    return input;
+  }
+
+  const stack: string[] = [];
+  let inString = false;
+  let escaping = false;
+
+  for (let i = start; i < input.length; i++) {
+    const ch = input[i];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{" || ch === "[") {
+      stack.push(ch);
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      const last = stack[stack.length - 1];
+      if ((ch === "}" && last === "{") || (ch === "]" && last === "[")) {
+        stack.pop();
+      }
+    }
+  }
+
+  let out = input.trimEnd();
+  if (inString) {
+    // Best-effort close any unterminated JSON string.
+    if (escaping) {
+      out = out.slice(0, -1);
+    }
+    out += "\"";
+  }
+
+  for (let i = stack.length - 1; i >= 0; i--) {
+    out += stack[i] === "{" ? "}" : "]";
+  }
+
+  return out;
 }
 
 function escapeUnescapedNewlinesInStrings(input: string): string {
@@ -450,10 +555,30 @@ function mapAndValidateGroups(response: string, hunks: Hunk[]): GroupPlan[] {
 
     return mappedGroups;
   } catch (error) {
+    debugLog(
+      `llm(json-parse): responseChars=${response.length} head=${JSON.stringify(response.slice(0, 200))} tail=${JSON.stringify(response.slice(-200))}`,
+    );
     throw new Error(
       `Failed to parse LLM response as JSON: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+}
+
+function normalizeCommitMessageText(text: string): string {
+  let out = text.trim();
+  if (out.includes("```")) {
+    const match = out.match(/```(?:\w+)?\s*([\s\S]*?)\s*```/);
+    if (match?.[1]) {
+      out = match[1].trim();
+    }
+  }
+  if (
+    (out.startsWith("\"") && out.endsWith("\"")) ||
+    (out.startsWith("'") && out.endsWith("'"))
+  ) {
+    out = out.slice(1, -1).trim();
+  }
+  return out;
 }
 
 function normalizePlanCoverage(groups: GroupPlan[], hunks: Hunk[]): GroupPlan[] {
