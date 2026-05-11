@@ -1,0 +1,6 @@
+# Overrides .gitignore for npm pack so the compiled CLI in bin/ can ship.
+node_modules/
+.env
+.env.*
+*.log
+.DS_Store

@@ -1,5 +1,7 @@
 # git-smart-commits
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A lightweight Bun-powered CLI that uses an AI model to produce clean Conventional Commit messages and commit your changes. By default it creates 1 squashed commit; with `--split` it can create 1..N logical commits.
 
 ## Prerequisites
@@ -105,3 +107,11 @@ Plan:
 - Empty diff: make sure you have local changes before invoking the command
 - API errors: check connectivity and confirm the model name is valid for your key
 - `Failed to parse LLM response as JSON`: this only affects `--split`; try the default squash mode or rerun with `--debug` to capture details
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE).
