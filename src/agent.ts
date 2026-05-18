@@ -20,6 +20,7 @@ import {
 } from "./git.js";
 import { requestGroupPlan, requestSquashCommitMessage } from "./llm.js";
 import { debugLog } from "./debug.js";
+import { validateConventionalCommitMessage } from "./commit-message.js";
 
 export async function smartCommit(
   config: AgentConfig,
@@ -97,8 +98,16 @@ export async function smartCommit(
       console.log("\n=== Squash Commit ===\n");
       console.log(`Proposed commit message:\n${message}\n`);
       console.log(`Files: ${[...new Set(hunks.map((h) => h.file))].join(", ")}`);
+      printValidationWarnings(message);
 
       if (config.planOnly) {
+        return;
+      }
+
+      if (!config.dryRun && !interactive && !config.yes) {
+        console.log(
+          "Not committing without confirmation. Re-run with --yes to commit, or use --interactive.",
+        );
         return;
       }
 
@@ -131,6 +140,7 @@ export async function smartCommit(
         return;
       }
 
+      assertValidCommitMessage(message);
       const ok = commitWithMessage(message);
       if (ok) {
         committedAny = true;
@@ -150,6 +160,13 @@ export async function smartCommit(
 
     printPlan(plan);
     if (config.planOnly) {
+      return;
+    }
+
+    if (!config.dryRun && !interactive && !config.yes) {
+      console.log(
+        "Not committing without confirmation. Re-run with --yes to commit, or use --interactive.",
+      );
       return;
     }
 
@@ -186,6 +203,14 @@ export async function smartCommit(
       console.log(`Files: ${group.files.join(", ")}`);
       if (group.rationale) {
         console.log(`Rationale: ${group.rationale}`);
+      }
+      const validation = validateConventionalCommitMessage(message);
+      if (!validation.ok) {
+        console.error(
+          `  Skipping: invalid commit message (${validation.reasons.join("; ")})`,
+        );
+        skipped.push(group);
+        continue;
       }
 
       if (interactive) {
@@ -358,6 +383,24 @@ function formatGroupHeader(group: GroupPlan): string {
   return `${group.type}${scope}: ${group.title}${additionalTypesStr}`;
 }
 
+function assertValidCommitMessage(message: string): void {
+  const validation = validateConventionalCommitMessage(message);
+  if (!validation.ok) {
+    throw new Error(
+      `Refusing to commit invalid Conventional Commit message: ${validation.reasons.join("; ")}`,
+    );
+  }
+}
+
+function printValidationWarnings(message: string): void {
+  const validation = validateConventionalCommitMessage(message);
+  if (!validation.ok) {
+    console.warn(
+      `Warning: proposed message is not a valid Conventional Commit (${validation.reasons.join("; ")}).`,
+    );
+  }
+}
+
 export function formatConventionalCommit(group: GroupPlan): string {
   const scope = group.scope ? `(${group.scope})` : "";
   const header = `${group.type}${scope}: ${group.title}`;
@@ -371,64 +414,6 @@ export function formatConventionalCommit(group: GroupPlan): string {
   }
 
   return bodyParts.length > 0 ? `${header}\n\n${bodyParts.join("\n\n")}` : header;
-}
-
-function formatSquashedCommit(plan: GroupPlan[]): string {
-  if (plan.length === 0) {
-    return "chore: smart commit";
-  }
-  if (plan.length === 1) {
-    return formatConventionalCommit(plan[0]);
-  }
-
-  const primary = selectPrimaryGroup(plan);
-  const scope = primary.scope ? `(${primary.scope})` : "";
-  const header = `${primary.type}${scope}: ${primary.title}`;
-
-  const bodyParts: string[] = [];
-  if (primary.body) {
-    bodyParts.push(primary.body);
-  }
-
-  bodyParts.push(
-    "Includes:\n" +
-      plan
-        .filter((g) => g.id !== primary.id)
-        .map((g) => {
-          const line = `- ${formatGroupHeader(g)}`;
-          return g.body ? `${line}\n  ${g.body.split("\n").join("\n  ")}` : line;
-        })
-        .join("\n"),
-  );
-
-  return `${header}\n\n${bodyParts.join("\n\n")}`;
-}
-
-function selectPrimaryGroup(plan: GroupPlan[]): GroupPlan {
-  const typePriority: Record<string, number> = {
-    feat: 100,
-    fix: 90,
-    perf: 80,
-    refactor: 70,
-    test: 60,
-    docs: 50,
-    ci: 40,
-    build: 30,
-    chore: 20,
-    style: 10,
-    revert: 0,
-  };
-
-  const scoreGroup = (g: GroupPlan) => {
-    const typeScore = typePriority[g.type] ?? 25;
-    const delta = g.hunks.reduce(
-      (sum, h) => sum + (h.linesAdded ?? 0) + (h.linesRemoved ?? 0),
-      0,
-    );
-    return typeScore * 1_000_000 + delta;
-  };
-
-  return plan.reduce((best, g) => (scoreGroup(g) > scoreGroup(best) ? g : best));
 }
 
 async function promptYesNo(question: string, defaultYes: boolean): Promise<boolean> {

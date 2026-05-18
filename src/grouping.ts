@@ -1,4 +1,5 @@
 import type { Hunk, GroupPlan, ConventionalType } from "./types.js";
+import { redactSensitiveText } from "./redaction.js";
 
 export function applyHeuristics(hunks: Hunk[]): Map<string, Hunk[]> {
   const groups = new Map<string, Hunk[]>();
@@ -67,7 +68,7 @@ type BuildPlanningChunksOptions = {
 
 function clampLine(line: string, maxChars: number): string {
   if (line.length <= maxChars) return line;
-  return line.slice(0, Math.max(0, maxChars - 1)) + "…";
+  return line.slice(0, Math.max(0, maxChars - 3)) + "...";
 }
 
 function pickChangedLines(
@@ -137,11 +138,15 @@ export function formatHunkForPlanning(
   for (const hl of headerLines) lines.push(`    ${clampLine(hl, perLineMaxChars)}`);
   if (signal.length) {
     lines.push(`    Signals:`);
-    for (const s of signal) lines.push(`      ${clampLine(s, perLineMaxChars)}`);
+    for (const s of signal) {
+      lines.push(`      ${clampLine(redactSensitiveText(s), perLineMaxChars)}`);
+    }
   }
   if (picked.length) {
     lines.push(`    Changed:`);
-    for (const c of picked) lines.push(`      ${clampLine(c, perLineMaxChars)}`);
+    for (const c of picked) {
+      lines.push(`      ${clampLine(redactSensitiveText(c), perLineMaxChars)}`);
+    }
   }
   if (omittedCount > 0) {
     lines.push(`    (omitted ${omittedCount} changed lines)`);
@@ -223,10 +228,9 @@ export function summarizeHunks(hunks: Hunk[], maxLength: number = 8000): string 
     return "";
   }
 
-  // New approach: reuse the planning formatter and chunk builder for a stable,
-  // information-dense summary (still bounded by maxLength).
+  const chunkSize = Math.max(2000, Math.min(maxLength, 8000));
   const chunks = buildPlanningChunks(hunks, {
-    maxChunkChars: maxLength,
+    maxChunkChars: chunkSize,
     maxTotalChars: maxLength,
     perHunkMaxChangedLines: 24,
     perHunkMaxHeaderLines: 2,
@@ -234,7 +238,17 @@ export function summarizeHunks(hunks: Hunk[], maxLength: number = 8000): string 
   });
 
   if (chunks.length === 0) return "";
-  return chunks[0].summary;
+  const summary = chunks
+    .map((chunk) =>
+      chunks.length === 1 ? chunk.summary : `Chunk ${chunk.id}:\n${chunk.summary}`,
+    )
+    .join("\n\n");
+
+  if (summary.length <= maxLength) {
+    return summary;
+  }
+
+  return `${summary.slice(0, Math.max(0, maxLength - 44)).trimEnd()}\n(truncated: summary exceeded ${maxLength} chars)`;
 }
 
 export function mergeTinyGroups(

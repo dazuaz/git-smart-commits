@@ -36,7 +36,9 @@
   },
   "scripts": {
     "dev": "bun run src/cli.ts",
+    "test": "bun test",
     "build": "bun build ./src/cli.ts --compile --outfile ./bin/git-smart-commit",
+    "check": "bun test && bun run build",
     "prepare": "bun run build"
   }
 }
