@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A lightweight Bun-powered CLI that uses an AI model to produce clean Conventional Commit messages for your changes. By default it proposes 1 squashed commit; with `--split` it can propose 1..N logical commits.
+A lightweight Bun-powered CLI that uses an AI model to produce clean Conventional Commit messages and commit your changes. By default it creates 1 squashed commit; with `--split` it can create 1..N logical commits.
 
 ## Prerequisites
 - [Bun](https://bun.sh/) 1.3 or newer
@@ -40,27 +40,26 @@ The CLI will:
 2. Redact common secret-looking values from changed lines before building the model prompt
 3. Ask the model for either a single squashed commit message (default) or a 1..N commit plan (`--split`)
 4. Show the proposed message(s)
-5. Commit only when you confirm interactively or pass `--yes`
+5. Commit non-interactively by default; use `--dry-run`, `--plan-only`, or `--interactive` when you want review before commit creation
 
 **Flags:**
 - `--plan-only` &mdash; print the proposed plan/messages, do nothing
 - `--dry-run` &mdash; simulate staging/commits without committing
 - `--debug` &mdash; print progress/timing to stderr (useful if it feels stuck)
 - `--interactive` &mdash; prompt before including/committing changes
-- `--yes` &mdash; create commit(s) without confirmation
 - `--squash` &mdash; create 1 squashed commit (default)
 - `--split` &mdash; create 1..N commits from the plan instead of squashing
 
 **Examples:**
 ```bash
 # Preview the squashed commit message without committing
-git-smart-commit
+git-smart-commit --plan-only
 
 # Simulate what would be committed
 git-smart-commit --dry-run
 
-# Create 1 squashed commit without confirmation
-git-smart-commit --yes
+# Create 1 squashed commit
+git-smart-commit
 
 # Create multiple commits (one per group)
 git-smart-commit --split --interactive
@@ -105,7 +104,6 @@ Plan:
 ## Troubleshooting
 - "Missing OPENAI_API_KEY": export your API key before running `git-smart-commit`
 - Empty diff: make sure you have local changes before invoking the command
-- "Not committing without confirmation": pass `--yes` or use `--interactive`
 - API errors: check connectivity and confirm the model name is valid for your key
 - `Failed to parse LLM response as JSON`: this only affects `--split`; try the default squash mode or rerun with `--debug` to capture details
 

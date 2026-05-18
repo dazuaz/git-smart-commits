@@ -104,13 +104,6 @@ export async function smartCommit(
         return;
       }
 
-      if (!config.dryRun && !interactive && !config.yes) {
-        console.log(
-          "Not committing without confirmation. Re-run with --yes to commit, or use --interactive.",
-        );
-        return;
-      }
-
       if (interactive) {
         const proceed = await promptYesNo(
           `Proceed to ${config.dryRun ? "simulate" : "create"} 1 commit? (y/N): `,
@@ -160,13 +153,6 @@ export async function smartCommit(
 
     printPlan(plan);
     if (config.planOnly) {
-      return;
-    }
-
-    if (!config.dryRun && !interactive && !config.yes) {
-      console.log(
-        "Not committing without confirmation. Re-run with --yes to commit, or use --interactive.",
-      );
       return;
     }
 
