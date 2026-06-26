@@ -20,7 +20,10 @@ import {
 } from "./git.js";
 import { requestGroupPlan, requestSquashCommitMessage } from "./llm.js";
 import { debugLog } from "./debug.js";
-import { validateConventionalCommitMessage } from "./commit-message.js";
+import {
+  normalizeCommitTitle,
+  validateConventionalCommitMessage,
+} from "./commit-message.js";
 
 export async function smartCommit(
   config: AgentConfig,
@@ -366,7 +369,9 @@ function formatGroupHeader(group: GroupPlan): string {
   const additionalTypesStr = group.additionalTypes?.length
     ? ` [+${group.additionalTypes.join(", +")}]`
     : "";
-  return `${group.type}${scope}: ${group.title}${additionalTypesStr}`;
+  return `${group.type}${scope}: ${normalizeCommitTitle(
+    group.title,
+  )}${additionalTypesStr}`;
 }
 
 function assertValidCommitMessage(message: string): void {
@@ -389,7 +394,7 @@ function printValidationWarnings(message: string): void {
 
 export function formatConventionalCommit(group: GroupPlan): string {
   const scope = group.scope ? `(${group.scope})` : "";
-  const header = `${group.type}${scope}: ${group.title}`;
+  const header = `${group.type}${scope}: ${normalizeCommitTitle(group.title)}`;
 
   const bodyParts: string[] = [];
   if (group.body) {

@@ -9,6 +9,7 @@ import type {
 import { CONVENTIONAL_TYPES } from "./types.js";
 import { summarizeHunks, buildPlanningChunks } from "./grouping.js";
 import { debugLog } from "./debug.js";
+import { repairConventionalCommitMessage } from "./commit-message.js";
 
 const DEFAULT_MAX_TOKENS = 900;
 const GPT5_MAX_OUTPUT_TOKENS = 4_000;
@@ -46,7 +47,7 @@ ${hunkSummary}`;
     "You are a senior engineer writing concise Conventional Commits for a single squashed commit.";
 
   const response = await fetchLLM(config, systemPrompt, prompt, "squash(message)");
-  return normalizeCommitMessageText(response);
+  return repairConventionalCommitMessage(normalizeCommitMessageText(response));
 }
 
 export async function requestGroupPlan(
